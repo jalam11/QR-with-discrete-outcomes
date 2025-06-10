@@ -1,0 +1,507 @@
+---
+title: "MIREC data example"
+author: "Josh Alampi"
+date: "2025-02-14"
+output: html_document
+---
+
+# load functions and packages
+```{r}
+#clear workspace
+rm(list=ls(all=TRUE))
+
+# load packages 
+source(here::here("libraries.R"))
+
+# Write function
+summary_sw <- function(object, # the BayesQR object (made from running BayesQR(y ~ x1 + x2 + ...)). 
+                       ## The chemical/ exposure variable you are interested in must be listed as the **first** covariate in the BayesQR model
+                       n, # the sample size
+                       covariates= x, # A vector containing the covariate names, in the same order as the BayesQR() object
+                       burnin = 1,  # The initialy number of iterations burned
+                       level = 0.95) { # The confidence interval level
+  
+  z <- qnorm( 1 - ((1-level) / 2) )
+  
+  tau <- object[[1]]$quantile
+  
+  D1.m1 <- sqrt(n)*var(object[[1]]$beta[-(1:burnin),])/1  # from page 331 of Yang. "D1.m1" means "D1 to the minus 1; which is the inverse of D1"
+  X <- covariates ## build an object called "X", which is required
+  D0 <- (1/n)*(t(X) %*% X) # from page 331 of Yang
+  
+  tmp <- sqrt(diag( tau*(1-tau) * ((D1.m1 %*% D0) %*% D1.m1))) #rows of right matrix must = # of columns of left matrix
+  
+  mn <- mean(object[[1]]$beta[-(burnin),2])  # regression coefficient for chemical (posterior mean)
+  se.adj <- tmp[2]
+  lower_bound <- mn - se.adj*z
+  upper_bound <- mn + se.adj*z
+  
+  res <- c(mn, lower_bound, upper_bound)
+  return(res)
+}
+```
+
+# Load data
+```{r}
+# Load MIREC data
+data <- read.csv("//ais-fs1.sfu.ca/home2/Redirected_Profiles/jalampi/Desktop/MIREC loader 2022/clean data/MIREC data_mixtures.csv") %>% 
+  filter(is.na(srs) == F) # only include participants with SRS scores
+```
+
+
+# Prepare data
+```{r}
+# dither y
+set.seed(123)
+data <- mutate(data, srs_dith = dither(srs))
+
+# record the chemical names
+chemical_names <-c("arsenic.t1.res", "cadmium.t1.res", "lead.t1.res", "mercury.t1.res")
+
+num_chems <- length(chemical_names)
+```
+
+## remove missing values
+```{r}
+data_old <- data
+data <- data %>% 
+  drop_na(all_of(chemical_names)) %>% 
+  drop_na(all_of(c("income4", "edu4", "smoker2")))
+
+n <- nrow(data)
+
+```
+
+## make dummy vars
+```{r}
+#Make dummy variables for income
+data$inc.040 <- rep(0, dim(data)[1])
+data$inc.040[data$income4==1] <- 1
+
+data$inc.040_80 <- rep(0, dim(data)[1])
+data$inc.040_80[data$income4==2] <- 1
+
+data$inc.080_100 <- rep(0, dim(data)[1])
+data$inc.080_100[data$income4==3] <- 1
+
+data$inc.100plus <- rep(0, dim(data)[1])
+data$inc.100plus[data$income4==4] <- 1 # ref
+
+#for education:
+data$edu.HS <- rep(0,dim(data)[1])
+data$edu.HS[data$edu4==1] <-1
+
+data$edu.college <- rep(0,dim(data)[1])
+data$edu.college[data$edu4==2] <-1
+
+data$edu.uni <- rep(0,dim(data)[1])
+data$edu.uni[data$edu4==3] <-1 # ref
+
+data$edu.grad <- rep(0,dim(data)[1])
+data$edu.grad[data$edu4==4] <-1
+
+#for mom.age:
+data$age_under30 <- rep(0, dim(data)[1])
+data$age_under30[data$mom.age3==1] <-1
+
+data$age_over30 <- rep(0, dim(data)[1])
+data$age_over30[data$mom.age3 %in% c(2,3)] <-1 # ref
+
+#for parity:
+data$par_null <- rep(0,dim(data)[1])
+data$par_null[data$parity3==1] <- 1 # ref
+
+data$par1plus <- rep(0,dim(data)[1])
+data$par1plus[data$parity3==2] <- 1
+
+```
+
+## Select confounders 
+```{r}
+
+confounder_names <- c("sex2", "inc.040", "inc.040_80", "inc.080_100", "edu.HS", "edu.college", "edu.grad",
+                      "living.status2", "par_null", "race.white2", "age_over30", "smoker2") # 2
+
+confounders <- select(data, c(confounder_names))
+```
+
+
+## Choose parameters parameters
+```{r}
+# Taus
+taus <- c(0.1, 0.5, 0.9)
+num_tau <- length(taus)
+
+# misc parameters
+num_methods <- 6
+boot <- 1000
+ndraw <- 27000 # from previous research
+burnin <- 2000
+z <- qnorm(0.975); z_lower <- 0.025; z_upper <- 0.975; level = 0.95 # For creating 95% Confidence intervals.
+
+
+# Make container
+table <- setNames(data.frame(matrix(data = NA, nrow = num_chems * num_tau * num_methods, 
+                                    ncol = 6)), 
+                  c("method", "beta", "lb", "ub", "tau", "chemical_name")) #set column names
+```
+
+
+# log 2x transformation
+```{r}
+set.seed(123)
+
+
+for(i in 1:num_chems){
+  
+  name <- (chemical_names)[i] # select name
+  
+  x <- data[,chemical_names[i]]
+  log2_x <- log2(x)
+  
+  this_formula <- as.formula(paste("srs", " ~ ", 
+                                   paste(c("log2_x", confounder_names), collapse = "+")))
+  
+  this_formula_dith <- as.formula(paste("srs_dith", " ~ ", 
+                                   paste(c("log2_x", confounder_names), collapse = "+")))
+  
+  
+  mat <- as.matrix(cbind(1, log2_x, confounders))
+  
+  for(j in 1:num_tau){
+    
+    tau <- taus[j]
+      
+      print(paste0("Chemical: ", name, ", tau=", tau))
+      
+      # Step 2: Make models and store parameters ----
+      
+      ## Frequentist models WITHOUT dithering ###################################################
+      rq_model_nodith <- (rq(this_formula, tau = tau, data = data)) # make model
+
+      ### rank with iid error intervals
+      riid_nodith_coef <- (summary(rq_model_nodith, se = "rank", iid = T, alpha = z_lower * 2)$coefficients)
+
+      ### xy bootstrap intervals
+      xy_nodith_coef <- (summary(rq_model_nodith, se = "boot", bsmethod ="xy", R = boot)$coefficients)
+      
+
+
+      ## Frequentist models WITH dithering #######################################################
+      rq_model_dith <- (rq(this_formula_dith, tau = tau, data = data)) # make model
+
+      ### rank with iid error intervals
+      riid_dith_coef <- (summary(rq_model_dith, 
+                                 se = "rank", iid = T, alpha = z_lower * 2)$coefficients)
+
+      ### xy bootstrap intervals
+      xy_dith_coef <- (summary(rq_model_dith, 
+                               se = "boot", bsmethod ="xy", R = boot)$coefficients)
+      
+      ## Bayesian model ##########################################################################
+      repeats_bqr <- 0
+      repeat{ # Remake model again if model fails to converge
+
+        # Make model
+        sink(file="bayesQR.txt") # save lengthy output to a text file so it does not display in console
+        bqr_model <- bayesQR(this_formula, quantile = tau, ndraw = ndraw, data = data)
+        sink()
+
+        # Check if it converged
+        model_converged <- ifelse(mean(bqr_model[[1]]$beta[,2]) == "NaN",
+                                  F, T)
+
+        if(model_converged == T){ # if the model converged
+          # Store the models parameters
+
+          ## Bayesian, unadjusted
+          bayesQR_coef <- summary(bqr_model,
+                                  burnin = burnin, credint = c(z_lower, z_upper))[[1]]$betadraw[2,]
+          bayes_unadj <- c(bayesQR_coef[1], # beta
+                           bayesQR_coef[2], # lb
+                           bayesQR_coef[3]) # ub
+
+          ## Bayesian, adjusted (v2)
+          bayes_adj_sw <- summary_sw(bqr_model, n = n, burnin = burnin,
+                                     covariates= mat, level =level)
+          bayes_adjv2 <- c(bayesQR_coef[1], # beta (still comes from the BayesQR() function)
+                           bayes_adj_sw[2], # lb
+                           bayes_adj_sw[3]) # ub
+
+          break # end the repeat statement
+        }
+
+
+        if(model_converged == F){ # if the model fails to converge
+          repeats_bqr <- repeats_bqr + 1
+          print(paste0("bqr Repeat # ", repeats_bqr))
+        }
+
+        if(repeats_bqr == 20){ # if model fails to converge too many times
+          print(paste0(name, " failed to converge too many times at tau = ", tau))
+
+          ## Bayesian, unadjusted
+          bayes_unadj <- c(NA, NA, NA) # assign NA
+
+          ## Bayesian, adjusted (v2)
+          bayes_adjv2 <- c(NA, NA, NA) # assign NA
+
+          break # end the repeat statement
+        }
+      }
+      
+      
+      # Step 3: Store values ----
+      ## Stores the method name, beta, lb, ub
+      
+      skip <- (j-1)*num_methods + (i-1)*num_methods*length(taus) 
+      lower_range <- skip + 1
+      upper_range <- skip + num_methods
+      
+      # # ## riid no dith
+      table[skip +1, 1] <- "riid_nodith"
+      table[skip +1, 2] <- riid_nodith_coef[2, 1] # beta
+      table[skip +1, 3] <- riid_nodith_coef[2, 2] # lb
+      table[skip +1, 4] <- riid_nodith_coef[2, 3] # ub
+
+      # ## xy no dith
+      table[skip +2, 1] <- "xy_nodith"
+      table[skip +2, 2] <- xy_nodith_coef[2, 1]
+      table[skip +2, 3] <- xy_nodith_coef[2, 1] - z * xy_nodith_coef[2, 2]
+      table[skip +2, 4] <- xy_nodith_coef[2, 1] + z * xy_nodith_coef[2, 2]
+
+      # ## riid with dith
+      table[skip +3, 1] <- "riid_dith"
+      table[skip +3, 2] <- riid_dith_coef[2, 1] # beta
+      table[skip +3, 3] <- riid_dith_coef[2, 2] # lb
+      table[skip +3, 4] <- riid_dith_coef[2, 3] # ub
+
+      ## xy with dith
+      table[skip +4, 1] <- "xy_dith"
+      table[skip +4, 2] <- xy_dith_coef[2, 1]
+      table[skip +4, 3] <- xy_dith_coef[2, 1] - z * xy_dith_coef[2, 2]
+      table[skip +4, 4] <- xy_dith_coef[2, 1] + z * xy_dith_coef[2, 2]
+
+      # ## Unadjusted Bayes
+      table[skip +5, 1] <- "bayes_unadj"
+      table[skip +5, 2] <- bayes_unadj[1]
+      table[skip +5, 3] <- bayes_unadj[2]
+      table[skip +5, 4] <- bayes_unadj[3]
+
+      # ## Adjusted Bayes v2 (my sandwich function)
+      table[skip +6, 1] <- "bayes_adjv2"
+      table[skip +6, 2] <- bayes_adjv2[1]
+      table[skip +6, 3] <- bayes_adjv2[2]
+      table[skip +6, 4] <- bayes_adjv2[3]
+      
+      ## Fill in the rest
+      table[lower_range:upper_range, 5] <- tau
+      table[lower_range:upper_range, 6] <- name
+
+    
+  }
+}
+
+table_log2x <- table %>% 
+  mutate(transformation = "log2x")
+
+```
+
+
+# binary transformation
+```{r}
+set.seed(123)
+
+
+for(i in 1:num_chems){
+  
+  name <- (chemical_names)[i] # select name
+  
+  # Select the chemical
+  x <- data[,chemical_names[i]]
+  
+  # Transform the chemical
+  binary_x <- ifelse(x > median(x, na.rm = T), 1, 0)
+  
+  this_formula <- as.formula(paste("srs", " ~ ", 
+                                   paste(c("binary_x", confounder_names), collapse = "+")))
+  
+  this_formula_dith <- as.formula(paste("srs_dith", " ~ ", 
+                                   paste(c("binary_x", confounder_names), collapse = "+")))
+  
+  
+  mat <- as.matrix(cbind(1, binary_x, confounders))
+  
+  for(j in 1:num_tau){
+    
+    tau <- taus[j]
+      
+      print(paste0("Chemical: ", name, ", tau=", tau))
+      
+      # Step 2: Make models and store parameters ----
+      
+      ## Frequentist models WITHOUT dithering ###################################################
+      rq_model_nodith <- (rq(this_formula, tau = tau, data = data)) # make model
+
+      ### rank with iid error intervals
+      riid_nodith_coef <- (summary(rq_model_nodith, se = "rank", iid = T, alpha = z_lower * 2)$coefficients)
+
+      ### xy bootstrap intervals
+      xy_nodith_coef <- (summary(rq_model_nodith, se = "boot", bsmethod ="xy", R = boot)$coefficients)
+      
+
+
+      ## Frequentist models WITH dithering #######################################################
+      rq_model_dith <- (rq(this_formula_dith, tau = tau, data = data)) # make model
+
+      ### rank with iid error intervals
+      riid_dith_coef <- (summary(rq_model_dith, 
+                                 se = "rank", iid = T, alpha = z_lower * 2)$coefficients)
+
+      ### xy bootstrap intervals
+      xy_dith_coef <- (summary(rq_model_dith, 
+                               se = "boot", bsmethod ="xy", R = boot)$coefficients)
+      
+      ## Bayesian model ##########################################################################
+      repeats_bqr <- 0
+      repeat{ # Remake model again if model fails to converge
+
+        # Make model
+        sink(file="bayesQR.txt") # save lengthy output to a text file so it does not display in console
+        bqr_model <- bayesQR(this_formula, quantile = tau, ndraw = ndraw, data = data)
+        sink()
+
+        # Check if it converged
+        model_converged <- ifelse(mean(bqr_model[[1]]$beta[,2]) == "NaN",
+                                  F, T)
+
+        if(model_converged == T){ # if the model converged
+          # Store the models parameters
+
+          ## Bayesian, unadjusted
+          bayesQR_coef <- summary(bqr_model,
+                                  burnin = burnin, credint = c(z_lower, z_upper))[[1]]$betadraw[2,]
+          bayes_unadj <- c(bayesQR_coef[1], # beta
+                           bayesQR_coef[2], # lb
+                           bayesQR_coef[3]) # ub
+
+          ## Bayesian, adjusted (v2)
+          bayes_adj_sw <- summary_sw(bqr_model, n = n, burnin = burnin,
+                                     covariates= mat, level =level)
+          bayes_adjv2 <- c(bayesQR_coef[1], # beta (still comes from the BayesQR() function)
+                           bayes_adj_sw[2], # lb
+                           bayes_adj_sw[3]) # ub
+
+          break # end the repeat statement
+        }
+
+
+        if(model_converged == F){ # if the model fails to converge
+          repeats_bqr <- repeats_bqr + 1
+          print(paste0("bqr Repeat # ", repeats_bqr))
+        }
+
+        if(repeats_bqr == 20){ # if model fails to converge too many times
+          print(paste0(name, " failed to converge too many times at tau = ", tau))
+
+          ## Bayesian, unadjusted
+          bayes_unadj <- c(NA, NA, NA) # assign NA
+
+          ## Bayesian, adjusted (v2)
+          bayes_adjv2 <- c(NA, NA, NA) # assign NA
+
+          break # end the repeat statement
+        }
+      }
+      
+      
+      # Step 3: Store values ----
+      ## Stores the method name, beta, lb, ub
+      
+      skip <- (j-1)*num_methods + (i-1)*num_methods*length(taus) 
+      lower_range <- skip + 1
+      upper_range <- skip + num_methods
+      
+      # # ## riid no dith
+      table[skip +1, 1] <- "riid_nodith"
+      table[skip +1, 2] <- riid_nodith_coef[2, 1] # beta
+      table[skip +1, 3] <- riid_nodith_coef[2, 2] # lb
+      table[skip +1, 4] <- riid_nodith_coef[2, 3] # ub
+
+      # ## xy no dith
+      table[skip +2, 1] <- "xy_nodith"
+      table[skip +2, 2] <- xy_nodith_coef[2, 1]
+      table[skip +2, 3] <- xy_nodith_coef[2, 1] - z * xy_nodith_coef[2, 2]
+      table[skip +2, 4] <- xy_nodith_coef[2, 1] + z * xy_nodith_coef[2, 2]
+
+      # ## riid with dith
+      table[skip +3, 1] <- "riid_dith"
+      table[skip +3, 2] <- riid_dith_coef[2, 1] # beta
+      table[skip +3, 3] <- riid_dith_coef[2, 2] # lb
+      table[skip +3, 4] <- riid_dith_coef[2, 3] # ub
+
+      ## xy with dith
+      table[skip +4, 1] <- "xy_dith"
+      table[skip +4, 2] <- xy_dith_coef[2, 1]
+      table[skip +4, 3] <- xy_dith_coef[2, 1] - z * xy_dith_coef[2, 2]
+      table[skip +4, 4] <- xy_dith_coef[2, 1] + z * xy_dith_coef[2, 2]
+
+      # ## Unadjusted Bayes
+      table[skip +5, 1] <- "bayes_unadj"
+      table[skip +5, 2] <- bayes_unadj[1]
+      table[skip +5, 3] <- bayes_unadj[2]
+      table[skip +5, 4] <- bayes_unadj[3]
+
+      # ## Adjusted Bayes v2 (my sandwich function)
+      table[skip +6, 1] <- "bayes_adjv2"
+      table[skip +6, 2] <- bayes_adjv2[1]
+      table[skip +6, 3] <- bayes_adjv2[2]
+      table[skip +6, 4] <- bayes_adjv2[3]
+      
+      ## Fill in the rest
+      table[lower_range:upper_range, 5] <- tau
+      table[lower_range:upper_range, 6] <- name
+
+    
+  }
+}
+
+table_binary_x <- table %>% 
+  mutate(transformation = "binary_x")
+
+
+```
+
+# Save
+```{r}
+table_all <- rbind(table_log2x, table_binary_x)
+
+#save as a csv file
+write.csv(table_all, row.names = F, file = paste0("real data analysis/mirec results", "_",  Sys.Date(), ".csv", sep = ""))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

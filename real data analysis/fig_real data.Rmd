@@ -1,0 +1,160 @@
+---
+title: "fig_real data"
+output: html_document
+date: "2025-02-19"
+---
+
+# load functions and packages
+```{r}
+#clear workspace
+rm(list=ls(all=TRUE))
+
+# load packages and functions
+source(here::here("libraries.R"))
+source(here::here("functions/ggplot functions.R")) # To save time, I created a function "gg_geom_point()" which I will call to create the figures. 
+
+# load results
+res <- read.csv(here::here("real data analysis/mirec results_2025-06-04.csv"))
+
+```
+
+
+# clean
+## Fix labels
+```{r}
+# Fix method labels
+# beta_method_labels <- c("Standard \n(undithered) \nfrequentist", "Dithered \nfrequentist", "Unidthered \nBayesianᵃ")
+beta_method_labels <- c("Standard \n(undithered) \nfrequentist", "Dithered \nfrequentist", "Unidthered \nBayesian")
+
+# int_method_labels <- c("Rank (not dith.)ᵃ", "Rank (dith.)ᵃ", 
+#                       "xy (not dith.)ᵇ", "xy (dith.)",
+#                       "Bayes. (unadj.)ᶜ", "Bayes. (adj)ᶜ")
+
+# int_method_labels_cov <- c("Rank (not\ndith.)ᵃ", "Rank\n(dith.)ᵃ", 
+#                           "xy (not\ndith.)ᵇ", "xy\n(dith.)",
+#                           "Bayes.\n(unadj.)ᶜ", "Bayes.\n(adj)ᶜ")
+int_method_labels_cov <- c("Rank (not\ndithered)", "Rank\n(dithered)", 
+                          "xy-bootstrap\n(not\ndithered)", "xy-bootstrap\n(dithered)",
+                          "Bayesian\n(unadjusted)", "Bayesian\n(adjusted)")
+
+
+res <- res %>% 
+  mutate(tau = as.factor(tau)) %>% 
+  # Add a new column "beta_method", which groups methods together
+  mutate(beta_method = case_when(method %in% c("riid_nodith", "xy_nodith") ~ beta_method_labels[1],
+                                 method %in% c("riid_dith", "xy_dith") ~ beta_method_labels[2],
+                                 method %in% c("bayes_adjv1", 
+                                               "bayes_adjv2", "bayes_unadj") ~ beta_method_labels[3])) %>% 
+  ## Set the order
+  mutate(beta_method = factor(beta_method, beta_method_labels)) %>% 
+  
+  # Fix method labels
+  mutate(int_method_cov = case_when(method == "riid_nodith" ~ int_method_labels_cov[1],
+                                    method == "riid_dith" ~ int_method_labels_cov[2],
+                                    method == "xy_nodith" ~ int_method_labels_cov[3],
+                                    method == "xy_dith" ~ int_method_labels_cov[4],
+                                    method == "bayes_unadj" ~ int_method_labels_cov[5],
+                                    method == "bayes_adjv2" ~ int_method_labels_cov[6]
+                                    )) %>% 
+  ## Set the order
+  mutate(int_method_cov = factor(int_method_cov, int_method_labels_cov)) 
+
+# flag integer effect estimates
+is_integer <- function(x) {
+  response <- ifelse(abs(x) %% 1 < 1e-14, 
+                     "Yes", "No")
+  return(response)
+}
+
+res <- res %>% 
+  mutate(rounded = is_integer(beta)) 
+
+# fix chemical names
+res$chemical_name <- res$chemical_name %>% 
+  mapvalues("arsenic.t1.res", "Arsenic") %>% 
+  mapvalues("cadmium.t1.res", "Cadmium") %>% 
+  mapvalues("lead.t1.res", "Lead") %>% 
+  mapvalues("mercury.t1.res", "Mercury") 
+
+```
+
+
+
+# Prep figures
+
+## labels
+```{r}
+y <- "β (95% intervals)"
+
+x_lab <- "Quantile (τ)"
+col_title <- "Method"
+shape_title <- "Integer point estimate?"
+
+title_a <- "A) Binary chemical concentrations (above versus below median)"
+title_b <- "B) Continuous log2-transformed chemical concentrations"
+
+fig_width <- 7.5
+fig_height_short <- 5.5
+fig_height <- 8.5
+fig_height_long <- 10
+```
+
+# make fig
+
+```{r}
+make_qr_plot <- function(res, title = NULL) {
+  
+  plot <- res %>% 
+    # Use function 'gg_geom_point' to set defaults and ensure consistency
+    gg_geom_point(x =tau, y = beta, ymin = lb, ymax = ub,
+                        # shape = rounded, shape_vec = c(1, 5), shape_title = shape_title,
+                        colour = beta_method, col_title = col_title, 
+                        legend.direction = "horizontal", legend.box = "horizontal",
+                        facet_type = "grid", hori = "chemical_name", vert = "int_method_cov",  p_dodge = T,
+                        ylab = y, xlab = x_lab, title = title,
+                        text_size_minor = 8, text_size_major = 10, yint = 0, 
+                        coord_flip = F, ystrip_angle = 0,
+                        # panel.spacing.x = 0.15, panel.spacing.y = 0.05
+                        ) + 
+    scale_y_continuous(labels = scales::number_format(accuracy = 0.1) ) +
+    theme(legend.box.spacing = unit(0.0001, units = "inch"))
+  
+  return(plot)
+}
+
+# Make plots
+fig_binary <- res %>% #remake without a title (this plot will go in the manuscript)
+  filter(transformation == "binary_x") %>% 
+  make_qr_plot(., title_a)
+fig_binary
+
+ggsave(file = paste0("real data analysis/fig_real data_a", "_",  Sys.Date(), ".png"),
+       width = fig_width, height = fig_height, dpi = 600)
+
+
+
+
+fig_log2x <- res %>% #remake without a title (this plot will go in the manuscript)
+  filter(transformation == "log2x") %>% 
+  make_qr_plot(., title  = title_b)
+fig_log2x
+
+ggsave(file = paste0("real data analysis/fig_real data_b", "_",  Sys.Date(), ".png"),
+       width = fig_width, height = fig_height, dpi = 600)
+
+
+# fig_all <- ggarrange(fig_binary, fig_log2x, # Cut, easier to split the figure across 2 pages
+#                      nrow = 2, common.legend = T, legend = "bottom")
+
+
+```
+
+```{r}
+
+```
+
+
+
+
+
+

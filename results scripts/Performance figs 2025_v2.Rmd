@@ -1,0 +1,436 @@
+---
+title: "Performance figs 2025_v2"
+output: html_document
+date: "2025-02-26"
+---
+
+
+# load
+```{r}
+#clear workspace
+rm(list=ls(all=TRUE))
+
+# load packages and functions
+source(here::here("libraries.R"))
+source("functions/ggplot functions.R") # To save time, I created a function "gg_geom_point()" which I will call to create the figures. 
+
+res <- read.csv("data/cleaned/cleaned SS_all models_2025-01-18_1000_sims.csv") %>% 
+  mutate(tau = as.factor(tau)) %>% 
+  mutate(blank = F) # add a blank row, used to edit the shape of figures
+```
+
+
+# clean
+## Fix labels
+```{r}
+# Fix method labels
+# beta_method_labels <- c("Standard \n(undithered) \nfrequentist", "Dithered \nfrequentist", "Unidthered \nBayesianᵃ")
+beta_method_labels <- c("Standard \n(undithered) \nfrequentist", "Dithered \nfrequentist", "Unidthered \nBayesian")
+
+# beta_method_labels_ref <- c("Standard \n(undithered) \nfrequentist \n[reference]", "Dithered \nfrequentist", "Unidthered \nBayesianᵃ") # Label reference group
+beta_method_labels_ref <- c("Standard \n(undithered) \nfrequentist \n[reference]", "Dithered \nfrequentist", "Unidthered \nBayesian") # Label reference group
+
+# beta_method_labels_int <- c("Standard \n(undithered) \nfrequentist", "Dithered \nfrequentist", "Unidthered \nBayesianᶜ")
+beta_method_labels_int <- c("Standard \n(undithered) \nfrequentist", "Dithered \nfrequentist", "Unidthered \nBayesian")
+
+model_labels <- c("M1: Binary X1, iid\nmodel errors", "M2: Binary X1, nid\nmodel errors",
+                  "M3: Binary X1, nid\n& heavy-tailed\nmodel errors", "M4: Cnts X1, nid\nmodel errors",
+                  "M5: Cnts X1, nid\n& heavy-tailed\nmodel errors")
+
+# int_method_labels <- c("Rank (not dith.)ᵃ", "Rank (dith.)ᵃ", 
+#                       "xy (not dith.)ᵇ", "xy (dith.)",
+#                       "Bayes. (unadj.)ᶜ", "Bayes. (adj)ᶜ")
+# 
+# int_method_labels_cov <- c("Rank (not\ndith.)ᵃ", "Rank\n(dith.)ᵃ", 
+#                           "xy (not\ndith.)ᵇ", "xy\n(dith.)",
+#                           "Bayes.\n(unadj.)ᶜ", "Bayes.\n(adj)ᶜ")
+
+int_method_labels <- c("Rank (not dith.)", "Rank (dith.)", 
+                      "xy-bootstrap (not dith.)", "xy-bootstrap (dith.)",
+                      "Bayesian (unadj.)", "Bayesian (adj.)")
+
+int_method_labels_cov <- c("Rank (not\ndithered)", "Rank\n(dithered)", 
+                          "xy-bootstrap\n(not\ndithered)", "xy-bootstrap\n(dithered)",
+                          "Bayesian\n(unadjusted)", "Bayesian\n(adjusted)")
+
+res <- res %>% 
+  # Set the order of all methods
+  # mutate(method = factor(method, c("riid_nodith", "riid_dith", 
+  #                                  "xy_nodith", "xy_dith",
+  #                                  "bayes_unadj", "bayes_adjv2"))) %>% 
+
+  # Add a new column "beta_method", which groups methods together
+  mutate(beta_method = case_when(method %in% c("riid_nodith", "xy_nodith") ~ beta_method_labels[1],
+                                 method %in% c("riid_dith", "xy_dith") ~ beta_method_labels[2],
+                                 method %in% c("bayes_adjv1", 
+                                               "bayes_adjv2", "bayes_unadj") ~ beta_method_labels[3])) %>% 
+  ## Set the order
+  mutate(beta_method = factor(beta_method, beta_method_labels)) %>% 
+  
+  
+  # Add a new column "beta_method_ref", which is the same as above, but labels the reference group
+  mutate(beta_method_ref = case_when(beta_method == beta_method_labels[1] ~ beta_method_labels_ref[1],
+                                     .default = beta_method)) %>% 
+  ## Set the order
+  mutate(beta_method_ref = factor(beta_method_ref, beta_method_labels_ref)) %>%
+  
+  
+  # Add a new column "beta_method_int", which changes the superscripts for the 'interval' figures
+  mutate(beta_method_int = case_when(beta_method == beta_method_labels[3] ~ beta_method_labels_int[3],
+                                     .default = beta_method)) %>% 
+  ## Set the order
+  mutate(beta_method_int = factor(beta_method_int, beta_method_labels_int)) %>%
+  
+  
+  # Fix method labels
+  mutate(int_method = case_when(method == "riid_nodith" ~ int_method_labels[1],
+                                method == "riid_dith" ~ int_method_labels[2],
+                                method == "xy_nodith" ~ int_method_labels[3],
+                                method == "xy_dith" ~ int_method_labels[4],
+                                method == "bayes_unadj" ~ int_method_labels[5],
+                                method == "bayes_adjv2" ~ int_method_labels[6]
+                                )) %>% 
+  mutate(int_method_cov = case_when(method == "riid_nodith" ~ int_method_labels_cov[1],
+                                    method == "riid_dith" ~ int_method_labels_cov[2],
+                                    method == "xy_nodith" ~ int_method_labels_cov[3],
+                                    method == "xy_dith" ~ int_method_labels_cov[4],
+                                    method == "bayes_unadj" ~ int_method_labels_cov[5],
+                                    method == "bayes_adjv2" ~ int_method_labels_cov[6]
+                                    )) %>% 
+  ## Set the order
+  mutate(int_method = factor(int_method, int_method_labels)) %>%
+  mutate(int_method_cov = factor(int_method_cov, int_method_labels_cov)) %>%
+
+  # Make model labels more detailed
+  mutate(model = case_when(model == 1 ~ model_labels[1],
+                           model == 2 ~ model_labels[2],
+                           model == 3 ~ model_labels[3],
+                           model == 4 ~ model_labels[4],
+                           model == 5 ~ model_labels[5]))
+
+```
+
+
+## filter
+I only need to consider the beta coeficients, NOT the confidence intervals for bias and empSE. Therefore, I only need to include the "Unidthered Bayesian", "Standard (undithered) frequentist", and "Dithered frequentist" methods, but not the sub-methods for calculating their intervals
+The "xy_nodith" and "riid_nodith" methods give the exact same beta estimates, so I don't need to include both.
+```{r}
+res_short <- res %>%
+  filter(method %in% c("bayes_unadj", "riid_nodith", "riid_dith"))
+```
+
+
+# Prep figures
+
+## labels
+```{r}
+# y_cov <- "Empirical covarage probabilities (95% Monte Carlo intervals)"
+# y_intwidthvar <- "Empirical standard deviation of 90% interval widths (95% Monte Carlo intervals)"
+# y_bias <- "Bias (95% Monte Carlo intervals)"
+# y_empSE <- "Empirical standard error of point estimates (95% Monte Carlo intervals)"
+# y_empSE_rel <- "Relative % difference in empirical standard error of point estimates (95% Monte Carlo intervals)"
+# y_blank <- ""
+
+y_cov <- "Empirical covarage probabilities (±1 Monte Carlo standard error)"
+y_intwidthvar <- "Empirical standard deviation of 90% interval widths (±1 Monte Carlo SE)"
+y_bias <- "Bias (±1 Monte Carlo standard error)"
+y_empSE <- "Empirical standard error of point estimates (±1 Monte Carlo standard error)"
+y_empSE_rel <- "Relative (%) difference in the precision of point estimates (±1 Monte Carlo SE)"
+y_blank <- ""
+
+x_lab <- "Quantile (τ)"
+col_title <- "Method"
+
+fig_width <- 7.5
+fig_height_short <- 5.5
+fig_height <- 8.5
+fig_height_long <- 10
+```
+
+<!-- ## colours -->
+<!-- ```{r} -->
+<!-- show_col(hue_pal()(3)) -->
+<!-- # col_3 <- c("#7CAE00", "#00BFC4", "#C77CFF") -->
+<!-- ``` -->
+
+# Make figures
+## bias
+```{r}
+make_bias_plot <- function(res, title = NULL) {
+  fig_bias <- res %>%
+    # Use function 'gg_geom_point' to set defaults and ensure consistency
+    gg_geom_point(x = tau, y = (bias), 
+                  ymin = (bias)-(bias_se), 
+                  ymax = (bias) + (bias_se),
+                  p_dodge = T, 
+                  facet_type = "grid", hori = "model", vert = "n", scales = "free_x",
+                  
+                  shape = blank, shape_vec = c(1), shape_title = NULL,
+                  colour = beta_method, col_title = col_title,
+                  legend.direction = "horizontal",
+                  
+                  title = title, ylab = y_bias, xlab = x_lab,
+                  coord_flip = F, ystrip_angle = 0
+                  # panel.spacing.x = 0.2, panel.spacing.y = 0.05
+                  ) + 
+    scale_y_continuous(labels = number_format(accuracy = 0.1) ) +
+    theme(legend.box.spacing = unit(0.0001, units = "inch"))
+  
+  return(fig_bias)
+}
+
+# Save as a pdf for Environmental Epidemiology
+cairo_pdf(filename = paste0("results/ee2_fig_bias_all_n", "_",  Sys.Date(), ".pdf"), 
+          width = fig_width, height = fig_height_short, 
+          fallback_resolution = 1200) # save as pdf
+
+fig_bias_all <- make_bias_plot(res_short) 
+fig_bias_all
+
+ggsave(file = paste0("results/fig_bias_all_n", "_",  Sys.Date(), ".png"),
+       width = fig_width, height = fig_height_short, dpi = 600)
+
+```
+
+
+<!-- ## empSE -->
+<!-- ```{r} -->
+<!-- make_empSE_plot <- function(res, title = NULL) { -->
+<!--   plot <- res %>%  -->
+<!--     # Use function 'gg_geom_point' to set defaults and ensure consistency for all figures -->
+<!--     gg_geom_point(x = tau, y = empSE,  -->
+<!--                   ymin = empSE-(empSE_se), ymax = empSE + (empSE_se), -->
+<!--                   shape = blank, shape_vec = c(1), shape_title = NULL, -->
+<!--                   colour = beta_method, col_title = col_title,  -->
+<!--                   p_dodge = T, -->
+<!--                   facet_type = "grid", hori = "model", vert = "n", -->
+<!--                   legend.direction = "horizontal", -->
+<!--                   scales = "free_x", -->
+<!--                   title = title, ylab = y_empSE, xlab = x_lab, -->
+<!--                   yint = NULL, ystrip_angle = 0, -->
+<!--                   # panel.spacing.x = 0.2, panel.spacing.y = 0.05 -->
+<!--                   ) +  -->
+<!--     scale_y_continuous(labels = number_format(accuracy = 0.01) ) + -->
+<!--     theme(legend.box.spacing = unit(0.0001, units = "inch")) -->
+
+<!--   return(plot) -->
+<!-- } -->
+
+<!-- fig_empSE_all <- make_empSE_plot(res_short) -->
+<!-- fig_empSE_all -->
+
+<!-- ggsave(file = paste0("results/fig_empSE_all_n", "_",  Sys.Date(), ".png"), -->
+<!--        width = fig_width, height = fig_height_short, dpi = 600) -->
+<!-- ``` -->
+
+## empSE_rel
+```{r}
+make_empSE_rel_plot <- function(res, title = NULL) {
+  plot <- res %>% 
+    # Use function 'gg_geom_point' to set defaults and ensure consistency for all figures
+    gg_geom_point(x = tau, y = empSE_rel, 
+                  ymin = empSE_rel-(empSE_rel_se), ymax = empSE_rel + (empSE_rel_se),
+                  shape = blank, shape_vec = c(1), shape_title = NULL,
+                  colour = beta_method_ref, col_title = col_title, 
+                  p_dodge = T, 
+                  facet_type = "grid", hori = "model",  vert = "n",
+                  legend.direction = "horizontal",
+                  scales = "free_x",
+                  title = title, ylab = y_empSE_rel, xlab = x_lab,
+                  yint = 0, ystrip_angle = 0,
+                  # panel.spacing.x = 0.2, panel.spacing.y = 0.05
+                  )  +
+    theme(legend.box.spacing = unit(0.0001, units = "inch"))
+  
+  return(plot)
+}
+
+# Save as a pdf for Environmental Epidemiology
+cairo_pdf(filename = paste0("results/ee3_fig_empSE_rel_all_n", "_",  Sys.Date(), ".pdf"), 
+          width = fig_width, height = fig_height_short, 
+          fallback_resolution = 1200) # save as pdf
+
+fig_empSE_rel_all <- make_empSE_rel_plot(res_short)
+fig_empSE_rel_all
+
+ggsave(file = paste0("results/fig_empSE_rel_all_n", "_",  Sys.Date(), ".png"),
+       width = fig_width, height = fig_height_short, dpi = 600)
+```
+
+
+## cov
+```{r}
+make_cov_plot <- function(res, title = NULL, cov_limit = 0.65) {
+  cov_limit <- cov_limit
+  
+  data_tmp <- res %>% 
+    # if coverage rate is out of bounds, then it should be replaced with an arrow
+    filter(is.na(cov) == F) %>% # Undith xy was not run for models 4 and 5. These values need to be removed
+    mutate(alpha = ifelse(cov < cov_limit , 1, 0)) %>% 
+    mutate(cov_se = ifelse(cov < cov_limit, 0, cov_se)) %>%
+    mutate(cov = ifelse(cov < cov_limit, 0, cov)) 
+    
+  # Use function 'gg_geom_point' to set defaults and ensure consistency
+  plot <- gg_geom_point(.data = data_tmp, x =tau, y = cov, ymin = cov - (cov_se), ymax = cov + (cov_se),
+                        shape = blank, shape_vec = c(1), shape_title = NULL,
+                        colour = beta_method_int, col_title = col_title, 
+                        legend.direction = "horizontal",
+                        facet_type = "grid", hori = "model", vert = "int_method_cov",  p_dodge = F,
+                        ylab = y_cov, xlab = x_lab, title = title,
+                        text_size_minor = 8, text_size_major = 10, yint = 0.9, 
+                        limits = c(cov_limit,1), coord_flip = F, ystrip_angle = 0,
+                        # panel.spacing.x = 0.15, panel.spacing.y = 0.05
+                        ) + 
+    scale_y_continuous(labels = scales::number_format(accuracy = 0.1) ) +
+    theme(legend.box.spacing = unit(0.0001, units = "inch")) +
+    
+    # Add an arrow to denote out of range values. This arrow will have an alpha=0 (i.e. be invisible) when 'cov' value is within range.
+    geom_segment(data = data_tmp, 
+                 aes(y = 0.8, yend = cov_limit, 
+                     x = tau, xend = tau, alpha = alpha),
+                 arrow = arrow(length = unit(0.05, "inch"))) +
+    scale_alpha(range = c(0, 1)) + 
+    facet_grid(int_method_cov ~ model) + 
+    guides(alpha = "none") 
+  
+  return(plot)
+}
+
+# Save as a pdf for Environmental Epidemiology
+cairo_pdf(filename = paste0("results/ee4_fig_cov_main_250", "_",  Sys.Date(), ".pdf"), 
+          width = fig_width, height = fig_height_short, 
+          fallback_resolution = 1200) # save as pdf
+
+fig_cov_250_main <- res %>% #remake without a title (this plot will go in the manuscript)
+  filter(n == "n = 250") %>% 
+  make_cov_plot(.)
+fig_cov_250_main
+
+ggsave(file = paste0("results/fig_cov_main_250", "_",  Sys.Date(), ".png"),
+       width = fig_width, height = fig_height, dpi = 600)
+
+# Make plots for the appendix (remainint sample sizes)
+title_a <- "A) n = 100"
+title_b <- "B) n = 500"
+# title_c <- "C) n = 500"
+
+fig_cov_100 <- res %>% 
+  filter(n == "n = 100") %>% 
+  make_cov_plot(., title_a)
+
+fig_cov_100
+ggsave(file = paste0("results/fig_cov_100", "_",  Sys.Date(), ".png"),
+       width = fig_width, height = fig_height, dpi = 600)
+
+# fig_cov_250 <- res %>% 
+#   filter(n == "n = 250") %>% 
+#   make_cov_plot(., title_b)
+# fig_cov_250
+# 
+# ggsave(file = paste0("results/fig_cov_250", "_",  Sys.Date(), ".png"),
+#        width = fig_width, height = fig_height, dpi = 600)
+
+fig_cov_500 <- res %>% 
+  filter(n == "n = 500") %>% 
+  make_cov_plot(., title_b)
+
+fig_cov_500
+ggsave(file = paste0("results/fig_cov_500", "_",  Sys.Date(), ".png"),
+       width = fig_width, height = fig_height, dpi = 600)
+
+```
+
+
+## intwidth var fig
+Main plot: tau = 0.9 only. Remake 3 more versions with other taus
+```{r}
+make_intwidthEmpSE_plot <- function(res, title = NULL, ylab = "") {
+  plot <- res %>% 
+    filter(intwidth_empSE != 0 ) %>% # Undith xy was not run for models 4 and 5. It was given variance ==0, need to remove
+    # Use function 'gg_geom_point' to set defaults and ensure consistency for all figures
+    gg_geom_point(x = int_method, y = intwidth_empSE, 
+                  ymin = intwidth_empSE - (intwidth_empSE_se), 
+                  ymax = intwidth_empSE + (intwidth_empSE_se),
+                  shape = blank, shape_vec = c(1), shape_title = NULL,
+                  colour = beta_method_int, col_title = col_title, 
+                  p_dodge = F,
+                  legend.direction = "horizontal",
+                  facet_type = "grid", hori = "model", vert = "n", scales = "free",
+                  ylab = ylab, title = title,
+                  xlab = "Quantile regression interval method",
+                  text_size_minor = 8, text_size_major = 10,
+                  yint = NULL, coord_flip = F, ystrip_angle = 0,
+                  panel.spacing.x = 0.1, panel.spacing.y = 0.05) + 
+    scale_y_continuous(labels = number_format(accuracy = 0.1) ) +
+    theme(axis.text.x = element_text(angle = 315, hjust =0, vjust = 0.5)) +
+    theme(legend.box.spacing = unit(0.0001, units = "inch"))
+  
+  return(plot)
+}
+
+# Save as a pdf for Environmental Epidemiology
+cairo_pdf(filename = paste0("results/ee5_fig_intwidthEmpSE_main_tau_0.9", "_",  Sys.Date(), ".pdf"), 
+          width = fig_width, height = fig_height_short, 
+          fallback_resolution = 1200) # save as pdf
+
+# Make main plot (tau =0.9 only)
+fig_intwidthvar_main <- res %>% 
+  filter(tau == 0.9) %>% 
+  make_intwidthEmpSE_plot(., ylab = y_intwidthvar)
+
+fig_intwidthvar_main
+
+ggsave(file = paste0("results/fig_intwidthEmpSE_main_tau_0.9", "_",  Sys.Date(), ".png"),
+       width = fig_width, height = fig_height_short, dpi = 600)
+
+
+# Make plots for the appendix (remaining taus)
+# fix labels
+title_a <- "A) τ = 0.1"
+title_b <- "B) τ = 0.5"
+# title_c <- "C) τ = 0.9"
+
+# make figs
+fig_intwidthvar_a <- res %>%
+  filter(tau == 0.1) %>%
+  make_intwidthEmpSE_plot(., title_a, y_intwidthvar)
+
+ggsave(file = paste0("results/fig_intwidthEmpSE_a", "_",  Sys.Date(), ".png"),
+       width = fig_width, height = fig_height_short, dpi = 600)
+
+
+
+fig_intwidthvar_b <- res %>%
+  filter(tau == 0.5) %>%
+  make_intwidthEmpSE_plot(., title_b, y_intwidthvar)
+
+ggsave(file = paste0("results/fig_intwidthEmpSE_b", "_",  Sys.Date(), ".png"),
+       width = fig_width, height = fig_height_short, dpi = 600)
+
+
+
+# fig_intwidthvar_a_b <- ggarrange(res %>% ############## CUT. Easier to present this figure on different pages
+#                                    filter(tau == 0.1) %>%
+#                                    make_intwidthEmpSE_plot(., title_a),
+#                                  res %>%
+#                                    filter(tau == 0.5) %>%
+#                                    make_intwidthEmpSE_plot(., title_b),
+#                                 
+#                                  nrow = 2, common.legend = T, legend = "bottom") %>%
+#   annotate_figure(left = text_grob(y_intwidthvar, rot = 90, size = 9, vjust = 3))
+# 
+# ggsave(file = paste0("results/fig_intwidthEmpSE_a_b", "_",  Sys.Date(), ".png"),
+#        width = fig_width, height = fig_height_long, dpi = 600)
+# 
+# fig_intwidthvar_c <- res %>%
+#   filter(tau == 0.9) %>%
+#   make_intwidthEmpSE_plot(., title_c, y_intwidthvar)
+```
+
+
+
+```{r}
+
+```
+
+

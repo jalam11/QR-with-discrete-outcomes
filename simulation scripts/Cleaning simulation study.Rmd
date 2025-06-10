@@ -1,0 +1,255 @@
+---
+title: "Cleaning simulation study"
+author: "Josh Alampi"
+date: "2023-08-14"
+output: html_document
+---
+
+# load
+```{r}
+#clear workspace
+rm(list=ls(all=TRUE))
+
+# load packages and functions
+source(here::here("libraries.R"))
+
+data <- read.csv(here::here("data", "raw", "QR sim study_all models_2025-01-18_1000_sims.csv"))
+
+sims <- 1000 # the number of simulations that were run. Will calculate nsims_beta, nsims_beta for method that did not generate valid beta coefficients or confidence intervals 
+```
+
+# clean
+
+```{r}
+data <- data %>% 
+  filter(method != "bayes_adjv1") # do not need adj_v1 (the default SW adjustment), as I have demonstrated earlier that it is defective. 
+```
+
+```{r}
+data$beta <- as.numeric(data$beta)
+data$lb <- as.numeric(data$lb)
+data$ub <- as.numeric(data$ub)
+data$tau <- as.factor(data$tau)
+```
+
+
+# Make dataset with results
+
+## find interval width, remove infinite intervals
+```{r}
+# find interval width, with infinite intervals set to NA
+data <- data %>% 
+  mutate(int_width = ub - lb)
+
+# Flag and delete infinite intervals
+# Flag and delete simulations with no effect estimate
+data <- data %>% 
+  mutate(infin_flag = ifelse(is.infinite(lb) == T | is.infinite(ub) == T,
+                             T, # interval is infinite it should be removed
+                             F) ) %>%
+  mutate(na_flag = ifelse(is.na(beta) == T,
+                          T, # no effect estimate is given due to failure to converge
+                          F)) %>% 
+  # Make intervals and int_width NA when infinite intervals or failure to converge occured
+  mutate(lb = ifelse(infin_flag == T | na_flag == T, NA, lb)) %>%
+  mutate(ub = ifelse(infin_flag == T | na_flag == T, NA, ub)) %>%
+  mutate(int_width = ifelse(infin_flag == T | na_flag == T, NA, int_width))
+
+```
+
+## find average beta and average CI width across each group of variable
+Find the mean \hat(beta_i) across repetitions (Morris et al 2017 calls this value "beta-vinculum", the beta symboll with a flat line on top)
+
+```{r}
+data_summarised_1 <- data %>% 
+  group_by(method, tau, n, model) %>% 
+  summarise(mean_beta = mean(beta, na.rm = T)) 
+
+# Repeat this process with mean(\hat(interval width))
+data_summarised_2 <- data %>% 
+  group_by(method, tau, n, model) %>% 
+  summarise(mean_intwidth = mean(int_width, na.rm = T))
+
+
+# Add this value to the dataframe
+data <- merge(data, data_summarised_1, by=c("method", "tau", "model", "n"))
+data <- merge(data, data_summarised_2, by=c("method", "tau", "model", "n"))
+rm(data_summarised_1, data_summarised_2)
+```
+
+## Calculate performance measures 
+```{r}
+data1 <- data %>%
+  mutate(n = paste0(("n = "), n)) %>% 
+  
+  # Performance measures
+  mutate(hit_flag = ifelse(lb <= true_beta & ub >= true_beta,
+                           T, #90% interval contains true_beta
+                           F)) %>%
+  
+  mutate(hit_flag_be = ifelse(lb <= mean_beta & ub >= mean_beta,
+                              T, #90% interval contains mean_beta
+                              F)) %>%
+  
+  mutate(bias = beta - true_beta) %>% 
+  mutate(bias_rel = beta - mean_beta) %>%
+  mutate(intwidth_rel = int_width - mean_intwidth) %>% 
+  
+  # Cleaning
+  mutate(beta_ci_same_flag = ifelse(beta == lb | beta == ub, # flag rows where beta = lb or ub
+                             T, # interval is degenerate
+                             F) )
+
+```
+
+## make "res" (shortens "data" into something which can actually be interpretted)
+Calculations for these performance measures came from Morris et al. 2017
+```{r}
+
+
+res <- data1 %>% 
+  group_by(method, tau, n, model) %>% 
+  summarise(
+            # Find the proportion of flagged results (cannot use these in certain calculations)
+            beta_ci_same = sum(beta_ci_same_flag) / sims, # proportion of degenerate intervals
+            infin = sum(infin_flag == T) / sims, # proportion of infinite intervals
+            na = sum(na_flag == T) / sims, # proportion of effect estimates failing to converge
+            
+            # Calculate the number of simulations with enough info to performance
+            ## This information is needed to calculate all the performance measures!
+            skip_beta = (sum(na_flag == T) / sims), # proportion of skips needed for estimating the beta coefficients
+            skip_int = (sum(infin_flag == T | na_flag == T) / sims), # proportion of skips needed for estimate the intervals
+            
+            nsims_beta = sims - (sims*skip_beta), # the number of simulations where a beta coefficient was estimated
+            nsims_int = sims - (sims*skip_int), # the number of simulations where intervals were estimated
+            
+            
+            # effect estimate-based performance measures
+            ## I  need to take the beta estimates that failed to converge into account. Thus I use "nsims_beta". 
+            bias = sum(bias, na.rm = T) / nsims_beta,
+            bias_se = sqrt( sum((bias_rel)^2, na.rm = T) / (nsims_beta * (nsims_beta -1)) ),
+            
+            empSE = sqrt( sum((bias_rel)^2, na.rm = T) / (nsims_beta - 1) ),
+            empSE_se = empSE / sqrt( 2  * (nsims_beta - 1) ), # empSE_se depends on empSE value
+            
+            
+            # interval-based performance measures
+            ## I  need to take the beta estimates that failed to converge AND the infinite intervals into account. Thus I use "nsims_int". 
+            cov = sum(hit_flag == T, na.rm = T) / nsims_int, #### Emperical coverage probability
+            cov_se = sqrt( cov * (1-cov) / nsims_int ), # cov_se depends on cov value
+            
+            cov_be = sum(hit_flag_be == T, na.rm = T) / nsims_int, #### Bias-adjusted Emperical Coverage Prob.
+            cov_be_se = sqrt( cov_be * (1-cov_be) / nsims_int ), # cov_be_se depends on cov_be value
+            
+            intwidth_empSE = sqrt( sum((intwidth_rel)^2, na.rm = T) / (nsims_int - 1) ),
+            intwidth_empSE_se = intwidth_empSE / sqrt( 2  * (nsims_int - 1) )
+
+            ) 
+
+
+# Note: cov_be, cov_be_se are no longer used in the analysis. Left them in anyways in case I end up needing them at some point. 
+
+```
+
+# Calculate relative empSE of beta methods
+
+## make a wider table
+2 columns (empSE and MCSE of empSE) per method. 45 rows, 1 for each tau, model, n combination
+
+Note:
+All undithered frequentist methods (rank, xy) give the same effect estimates.(excluding undithered xy on models 4 and 5 which I did not run due to crashes)
+All dithered frequentist methods (rank, xy) give the same effect estimates.
+All undithered Bayesian methods (adjusted, unadjusted) give the same effect estimates.
+
+So to measure the empSE of the effect estimates, I only need 1 method for each of the 3 approaches listed above. 
+```{r}
+empSE_beta <- res %>%
+  filter(method %in% c("riid_nodith", "riid_dith", "bayes_unadj")) %>% 
+  select(c(n, model, tau, method, empSE, empSE_se)) %>% # remove unnecessary columns
+  pivot_wider(names_from = method, values_from = c(empSE, empSE_se))
+```
+
+## calculate correlation between methods
+```{r}
+# calculate correlation between undith freq (reference) and Bayesian
+cor_nodith_vs_dith <- data1 %>% 
+  filter(method %in% c("riid_nodith", "riid_dith")) %>% # only need to consider 3 methods for calculating betas
+  select(c(method, tau, n, model, beta)) %>% # remove unnecessary columns
+  group_by(n, model, tau) %>%
+  summarise(cor_nodith_vs_dith = cor(beta[method == "riid_nodith"], 
+                                     beta[method == "riid_dith"])) 
+
+# calculate correlation between undith freq (reference) and Bayesian
+cor_nodith_vs_bayes <- data1 %>% 
+  filter(method %in% c("riid_nodith", "bayes_unadj")) %>% # only need to consider 3 methods for calculating betas
+  select(c(method, tau, n, model, beta)) %>% # remove unnecessary columns
+  group_by(n, model, tau) %>%
+  summarise(cor_nodith_vs_bayes = cor(beta[method == "riid_nodith"], 
+                                      beta[method == "bayes_unadj"], use = "complete.obs")) 
+
+# merge cor values with the empSE values 
+empSE_beta <- cbind(empSE_beta, cor_nodith_vs_dith[,c(4)])
+empSE_beta <- cbind(empSE_beta, cor_nodith_vs_bayes[,c(4)])
+
+rm(cor_nodith_vs_dith, cor_nodith_vs_bayes) # clean up
+```
+
+## Calcualte relative difference
+```{r}
+
+
+rel_empSE_beta <- empSE_beta %>% 
+  # group_by(n, model, tau) %>% 
+  mutate(riid_dith = 100*(((empSE_riid_dith/empSE_riid_nodith)^2 ) - 1),
+         bayes_unadj = 100*(((empSE_bayes_unadj/empSE_riid_nodith)^2 ) - 1),
+         riid_nodith = 0,
+         xy_dith = NA,
+         bayes_adjv2 = NA,
+         xy_nodith = NA
+         ) %>% 
+  select(-c(empSE_bayes_unadj:cor_nodith_vs_bayes)) %>%  # don't need these columns anymore
+  pivot_longer(cols = c(riid_dith:xy_nodith), # pivot the columns containing the empSE_rel values
+               names_to = "method", values_to = "empSE_rel")
+
+
+rel_empSE_se_beta <- empSE_beta %>% 
+  # group_by(n, model, tau) %>% 
+  mutate(riid_dith = 200*((empSE_riid_dith/empSE_riid_nodith)^2) * sqrt((1-(cor_nodith_vs_dith)^2)/ (sims -1)),
+         bayes_unadj = 200*((empSE_bayes_unadj/empSE_riid_nodith)^2) * sqrt((1-(cor_nodith_vs_bayes)^2)/ (sims -1)),
+         riid_nodith = 0,
+         xy_dith = NA,
+         bayes_adjv2 = NA,
+         xy_nodith = NA
+         ) %>% 
+  select(-c(empSE_bayes_unadj:cor_nodith_vs_bayes)) %>%  # don't need these columns anymore
+  pivot_longer(cols = c(riid_dith:xy_nodith), # pivot the columns containing the empSE_rel values
+               names_to = "method", values_to = "empSE_rel_se")
+
+```
+
+## Merge this back with 'res'
+```{r}
+res2 <- merge(res, rel_empSE_beta, by=c("method", "tau", "n", "model") )
+res2 <- merge(res2, rel_empSE_se_beta, by=c("method", "tau", "n", "model"))
+```
+
+
+
+
+
+
+
+```{r}
+#save as a csv file
+write.csv(res2, row.names = F, file = paste0("data/cleaned/cleaned SS_all models_2025-01-18_1000_sims.csv", sep = ""))
+```
+
+```{r}
+
+```
+
+
+
+
+
+

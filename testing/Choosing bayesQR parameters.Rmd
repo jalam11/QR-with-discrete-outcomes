@@ -1,0 +1,188 @@
+---
+title: "Choosing bayesQR parameters"
+author: "Josh Alampi"
+date: "2024-11-15"
+output: html_document
+---
+```{r}
+#clear workspace
+rm(list=ls(all=TRUE))
+
+# load packages and functions
+source(here::here("libraries.R"))
+source(here::here("functions/Bayesian QR_adjusted intervals.R"))
+
+```
+
+# parameters
+
+Binary X, iid model errors
+Binary X, nid model errors
+Binary X, nid and heavy-tailed (t distribution with df=4) model errors
+Continuous X, nid model errors
+Continuous X, nid and heavy-tailed (t distribution with df=4) model errors
+
+```{r}
+# Simulation parameters
+
+nsims <- 10 # number of simulations performed
+
+z <- qnorm(0.95); z_lower <- 0.05; z_upper <- 0.95; level = 0.9 # For creating 90% Confidence intervals. 
+
+# model parameters: a vector for each model # x sample size (n) combination
+paras <- list( c(1, 100), c(1, 250), c(1, 500), # Model 1: Binary X, iid model errors
+               c(2, 100), c(2, 250), c(2, 500), # Model 2: Binary X, nid model errors
+               c(3, 100), c(3, 250), c(3, 500), # Model 3: Binary X, nid and heavy-tailed model errors
+               c(4, 100), c(4, 250), c(4, 500), # Model 4: Continuous X, nid model errors
+               c(5, 100), c(5, 250), c(5, 500)) # Model 5: Continuous X, nid and heavy-tailed model errors
+## 
+tau <- 0.9
+
+## x2
+prob_x2 <- 0.2 # probability that the confounder x2 equals 1
+
+## x1
+gamma <- 0.1 # effect of x2 on x1
+prob_x1 <- 0.5 - (gamma * prob_x2) # probability that binary x1=1 should be 50% after accounting for confounders
+mu_x1 <- 0 # mean of continuous x1
+sigma_x1 <- 1 # variance of continuous x1
+
+
+## y parameters
+beta0 <- 44 # true y value when x1 and x2 equall 0
+beta1 <- 0.5 # true effect of x1 on y
+beta2 <- 2.5 # true effect of x2 on y
+
+mu_u <- 0 # mean model error value
+sigma_u <- 1 # variance of model errors
+tdist_df <- 4 # Degrees of freedom for the t distribution
+alpha_y <- 5 # model error value is multiplied by this
+
+## misc parameters
+boot <- 1000 # Number of xy bootstraps selected
+ndraw <- 10000 # Number of MCMC draws for Bayesian QR
+burnin <- 2000 # Initial number of MCMC draw that are 'burned' or discarded
+```
+
+# Create plots for each model x n combination
+Only considering tau = 0.9
+```{r}
+set.seed(1010)
+
+for(i in 1:nsims){
+  print(paste0(i, " simulations out of ", nsims))
+  
+  list_dfs <- list()
+  
+  
+  for(j in 1:length(paras)){
+    this_para <- paras[[j]]
+
+    model <- this_para[1]
+    n <- this_para[2]
+    
+
+    # Step 1: Create data ----
+    
+    ## Make x2
+    x2 <- rbinom(n, 1, prob_x2) # create a confounding variable that is associated with x and y
+    
+    ## Make x1
+    if(model %in% c(1:3)){
+      x1 <- rbinom(n, 1, prob_x1 + gamma*x2) # binary x1 for models 1, 2, 3
+    } else {
+      x1 <- rnorm(n, mu_x1 + gamma*x2, sigma_x1) # Continuous x1 for models 4 and 5
+    }
+    
+    ## Specify model errors
+    if(model %in% c(1, 2, 4)){
+      e <- rnorm(n, mu_u, sigma_u) # Normally distributed errors for models 1, 2, 4
+    } else {
+      e <- rt(n, df = tdist_df, mu_u) # heavy-tailed (t distribution with df=4) model errors for models 3 and 5
+    }
+    
+    # Choose alpha_x1 value (controls whether variance in y depends on x1)
+    if(model == 1){
+      alpha_x1 <- 0 # Homoscedastic errors for model 1
+    } else {
+      alpha_x1 <- 0.5 # Heteroscedastic errors for models 2, 3, 4, 5
+    }
+    
+    # Make y
+    y <- round(beta0 + beta1*x1 + beta2*x2 + e*(alpha_y + alpha_x1*x1), digits=0)
+    
+    # Step 2: Make models ----
+    ## Bayesian model
+    repeats_bqr <- 0
+    repeat{ # Remake model again if model fails to converge 
+      
+      # Make model
+      sink(file="bayesQR.txt") # save lengthy output to a text file so it does not display in console
+      bqr_model <- bayesQR(y ~ x1 + x2, quantile = tau, ndraw = ndraw)
+      sink()
+      
+      # Check if it converged
+      model_converged <- ifelse(mean(bqr_model[[1]]$beta[,2]) == "NaN",
+                                F, T)
+      
+      if(model_converged == F){ # if the model fails to converge
+        repeats_bqr <- repeats_bqr + 1
+        print(paste0("bqr Repeat # ", repeats_bqr))
+      } 
+      
+      if(model_converged == T | repeats_bqr == 50){ # proceed if model converges or too many repeats
+        
+        break
+      }
+      
+      }
+      # Store data for the plot
+        
+      ## Make dfs
+      this_df <- setNames(data.frame(matrix(data = NA, nrow = ndraw, ncol = 5)), #make dataframe
+                                              c("bayesQR_iteration_number", "x1_draws", 
+                                                "tau", "model", "n")) #set column names
+      ## Store x1 values
+      if(model_converged == T){
+        this_x1_draws <- bqr_model[[1]]$betadraw[1:ndraw,2]
+      } else {
+        this_x1_draws <- rep(0, ndraw)
+      }
+      # this_x1_draws <- ifelse(model_converged == T,
+      #                         bqr_model[[1]]$betadraw[1:ndraw,2], # if it converged, then save the x1 draws from the model
+      #                         rep(0, ndraw)) # if it did not, just fill it in with zeros
+      
+      # Store everything to a df
+      this_df[, 1] <- seq(c(1:ndraw))
+      this_df[, 2] <- this_x1_draws
+      this_df[, 3] <- tau
+      this_df[, 4] <- paste0("Model #", model)
+      this_df[, 5] <- paste0("n = ", n)
+      
+      # Store df to a list
+      list_dfs[[j]] <- this_df
+      
+  }
+  
+  # Make a new df that contains all of the dfs made in this iteration
+  all_dfs <- do.call(rbind, list_dfs)
+  
+  # Make a plot
+  this_plot <- all_dfs %>% 
+    # filter(iteration_number < 5000) %>% 
+    ggplot() +
+    geom_path(aes(y = x1_draws, x = bayesQR_iteration_number)) +
+    facet_grid(model ~ n, scales = "free_y") +
+    geom_rect(xmin = 0, ymin = -Inf, ymax = Inf, xmax = burnin,
+              alpha = 0.025, colour = "grey") +
+    theme_bw()
+
+  # Save the plot
+  ggsave(filename = paste0("testing/testing BayesQR_ndraw_", ndraw, "_burnin_", burnin, "_tau_", tau, "_iter_", i, ".png"),
+       width = 7.5, height = 10, dpi = 300, type = "cairo")
+}
+
+```
+
+
+

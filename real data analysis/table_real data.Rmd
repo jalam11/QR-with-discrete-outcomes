@@ -1,0 +1,340 @@
+---
+title: "table_real data"
+output: html_document
+date: "2025-05-07"
+---
+
+
+# load functions and packages
+```{r}
+#clear workspace
+rm(list=ls(all=TRUE))
+
+# load packages and functions
+source(here::here("libraries.R"))
+source(here::here("functions/ggplot functions.R"))
+
+# load results
+res <- read.csv(here::here("real data analysis/mirec results_2025-06-04.csv")) %>% 
+  filter(tau %in% c(0.1, 0.5, 0.9))
+
+```
+
+
+# clean
+## Fix labels
+```{r}
+# Fix method labels
+# beta_method_labels <- c("Standard \n(undithered) \nfrequentist", "Dithered \nfrequentist", "Unidthered \nBayesianᵃ")
+beta_method_labels <- c("Standard \n(undithered) \nfrequentistᵇ", "Dithered \nfrequentistᵇ", "Undithered \nBayesianᶜ")
+
+# int_method_labels <- c("Rank (not dith.)ᵃ", "Rank (dith.)ᵃ", 
+#                       "xy (not dith.)ᵇ", "xy (dith.)",
+#                       "Bayes. (unadj.)ᶜ", "Bayes. (adj)ᶜ")
+
+# int_method_labels_cov <- c("Rank (not\ndith.)ᵃ", "Rank\n(dith.)ᵃ", 
+#                           "xy (not\ndith.)ᵇ", "xy\n(dith.)",
+#                           "Bayes.\n(unadj.)ᶜ", "Bayes.\n(adj)ᶜ")
+int_method_labels_cov <- c("Rank (not\ndithered)", "xy-bootstrap\n(not dithered)",
+                           "Rank\n(dithered)", "xy-bootstrap\n(dithered)",
+                           "Bayesian\n(unadjusted)", "Bayesian\n(adjusted)")
+
+
+res <- res %>% 
+  mutate(tau = as.factor(tau)) %>% 
+  # Add a new column "beta_method", which groups methods together
+  mutate(beta_method = case_when(method %in% c("riid_nodith", "xy_nodith") ~ beta_method_labels[1],
+                                 method %in% c("riid_dith", "xy_dith") ~ beta_method_labels[2],
+                                 method %in% c("bayes_adjv1", 
+                                               "bayes_adjv2", "bayes_unadj") ~ beta_method_labels[3])) %>% 
+  ## Set the order
+  mutate(beta_method = factor(beta_method, beta_method_labels)) %>% 
+  
+  # Fix method labels
+  mutate(int_method_cov = case_when(method == "riid_nodith" ~ int_method_labels_cov[1],
+                                    method == "xy_nodith" ~ int_method_labels_cov[2],
+                                    method == "riid_dith" ~ int_method_labels_cov[3],
+                                    method == "xy_dith" ~ int_method_labels_cov[4],
+                                    method == "bayes_unadj" ~ int_method_labels_cov[5],
+                                    method == "bayes_adjv2" ~ int_method_labels_cov[6]
+                                    )) %>% 
+  ## Set the order
+  mutate(int_method_cov = factor(int_method_cov, int_method_labels_cov))
+
+
+```
+
+## Set table labels
+```{r}
+title_main <- "Table 1. Point estimates (and 95% intervals) for the associationsᵃ between first-trimester metal concentrations and child SRS scores (indicates autistic-like behaviors) using various quantile regression methods, the MIREC Study, Canada, 2008-2011 (n = 568)."
+
+
+footer_main <- "a: Controls for child sex, family income, maternal education, maternal age, self-identified maternal Race, parity, maternal cigarette smoking during pregnancy, and whether the mother lives with their partner. Point estimates are rounded to four decimal places to demonstrate that many of them are rational numbers or integers.\nb: The default rank-based confidence intervals are used. See Table S1 or Figure S1 for results with xy-bootstrapped confidence intervals. \nc: The default unadjusted posterior credible intervals are used. See Table S1 or Figure S1 for results with adjusted posterior credible intervals"
+
+
+title_supp <- "Table S1. Point estimates (and 95% intervals) for the associationsᵃ between first-trimester metal concentrations and child SRS scores (indicates autistic-like behaviors) using various quantile regression methods, the MIREC Study, Canada, 2008-2011 (n = 568)."
+
+footer_supp <- "a: Controls for child sex, family income, maternal education, maternal age, self-identified maternal Race, parity, maternal cigarette smoking during pregnancy, and whether the mother lives with their partner. Point estimates are rounded to four decimal places to demonstrate that many of them are rational numbers or integers. "
+
+
+```
+
+## set flextable defaults
+```{r}
+init_flextable_defaults()
+
+set_flextable_defaults(
+  font.size = 9.5, font.family = "Calibri",
+  font.color = "black",
+  table.layout = "fixed",
+  border.color = "black",
+  line_spacing = 1,
+  padding.top = 0, padding.bottom = 0,
+  padding.left = 0, padding.right = 0)
+
+```
+
+## clean the dataset
+```{r}
+# # flag integer effect estimates
+# is_integer <- function(x) {
+#   response <- ifelse(abs(x) %% 1 < 1e-14, 
+#                      "Yes", "No")
+#   return(response)
+# }
+
+results_round <- 4 # number of integers to round to
+
+res <- res %>% 
+  # mutate(rounded = is_integer(beta)) %>% 
+  mutate(tau = paste0("τ = ", tau)) %>% 
+  mutate(beta = format(round(beta, results_round), nsmall = results_round, trim =T)) %>%
+  mutate(lb = format(round(lb, results_round), nsmall = results_round, trim =T)) %>%
+  mutate(ub = format(round(ub, results_round), nsmall = results_round, trim =T)) %>%
+  mutate(res = paste0(beta, " (", lb, ", ", ub, ")")) %>% 
+  select(c(int_method_cov, beta_method, tau, transformation, chemical_name, res)) %>% 
+  pivot_wider(names_from = c(tau), 
+              values_from = c(res), 
+              names_vary = "slowest") 
+
+# fix chemical names
+res$chemical_name <- res$chemical_name %>% 
+  mapvalues("arsenic.t1.res", "Arsenic") %>% 
+  mapvalues("cadmium.t1.res", "Cadmium") %>% 
+  mapvalues("lead.t1.res", "Lead") %>% 
+  mapvalues("mercury.t1.res", "Mercury") 
+
+# Set order that I want results to be listed
+res <- res %>% 
+  arrange(transformation, int_method_cov, chemical_name)
+
+# Clean column names
+# greek <- expression(beta_tau)
+
+column_names <- c("Method", "beta_method", "transformation", "Chemical name",
+                   "beta (95% intervals)_τ = 0.1",
+                   "beta (95% intervals)_τ = 0.5",
+                   "beta (95% intervals)_τ = 0.9")
+
+### set column names
+colnames(res) <- column_names
+```
+
+<!-- ## filter -->
+<!-- ```{r} -->
+<!-- res_log2x <- res %>%  -->
+<!--   filter(transformation == "log2x") %>%  -->
+<!--   select(-c(transformation)) -->
+
+<!-- res_binary <- res %>%  -->
+<!--   filter(transformation == "binary_x") %>%  -->
+<!--   select(-c(transformation)) -->
+
+<!-- ``` -->
+
+
+
+
+# make flextables
+
+## Make shortened table
+Only retain default interval methods. Simplified table for the main part of the manuscript.
+```{r}
+res_short <- res %>% 
+  select(-c(transformation)) %>% # this column is not included in the table
+  filter(Method %in% c("Rank (not\ndithered)", "Rank\n(dithered)", "Bayesian\n(unadjusted)")) %>% 
+  select(-c(Method)) %>% # Not using this column for this table
+  mutate(beta_method = as.character(beta_method)) 
+
+
+res_short_table <- setNames(data.frame(matrix(data = "", nrow = 12*2 + 2, ncol = 5)), 
+                            #set column names
+                            c("Quantile Regression Method", # edit this name
+                              column_names[-(1:3)]))  # delete 'transformation' column name as not needed. Keep everything else the same
+res_short_table[1, 1] <- "Binary chemical concentrations (above versus below median)"
+res_short_table[2:13,] <- res_short[1:12,]
+res_short_table[14, 1] <- "Continuous log2-transformed chemical concentrations"
+res_short_table[15:26,] <- res_short[13:24,]
+
+```
+
+### make shorttable
+```{r}
+flex_short_table <- res_short_table %>%
+  flextable() %>%
+  separate_header(split = "_") %>%
+
+  # align header
+  align(align = "center", part = "header") %>%
+  align(align = "left", part = "header", j = 1) %>%
+
+  # align body
+  align(align = "center", part = "body") %>% # align to center by default
+  align(align = "left", j = c(1,2)) %>% # align chemical names and method to the left
+  
+  # Add horizontal lines throughout
+  hline(part = "body") %>% 
+  
+  # Merge rows describing the transformation
+  merge_at(i = 1, j = 1:5) %>% 
+  merge_at(i = 14, j = 1:5) %>% 
+  
+  merge_v(j = 1) %>% 
+  
+  
+  # Add bold lines separating the results for both transformations
+  hline(i = c(1, 13, 14), part = "body", 
+        border = fp_border(width = 2)) %>% 
+  
+  # Add bold lines in the header and footer
+  hline(part = "header", border = fp_border(width = 2)) %>% 
+  # hline(part = "footer", border = fp_border(width = 2)) %>%   
+  hline(i = c(26), part = "body", 
+        border = fp_border(width = 2)) %>% 
+
+  # Title and bottom caption
+  add_header_lines(title_main, top = T) %>%
+  add_footer_lines(footer_main) %>% 
+
+  # set_table_properties(layout = "autofit", width = 1)
+  width(j = c(1:5),
+        width = c(0.6, 1, 1.4, 1.4, 1.4),
+        unit = "in")
+
+flex_short_table
+```
+
+## Make full table
+### Add rows that describe the transformation used
+```{r}
+res <- res %>% 
+  select(-c(transformation)) %>% # this column is not included in the table
+  select(-c(beta_method)) %>% # Not using this column for this table
+  mutate(Method = as.character(Method))
+
+res_table <- setNames(data.frame(matrix(data = "", nrow = 24*2 + 2, ncol = 5)), 
+                  #set column names
+                      c("Quantile Regression Method", # edit this name
+                        
+                    column_names[-(1:3)]))  # delete 'transformation' column name as not needed. Keep everything else the same
+res_table[1, 1] <- "Binary chemical concentrations (above versus below median)"
+res_table[2:25,] <- res[1:24,]
+res_table[26, 1] <- "Continuous log2-transformed chemical concentrations"
+res_table[27:50,] <- res[25:48,]
+
+```
+
+### make table
+```{r}
+flex_table <- res_table %>%
+  flextable() %>%
+  separate_header(split = "_") %>%
+
+  # align header
+  align(align = "center", part = "header") %>%
+  align(align = "left", part = "header", j = 1) %>%
+
+  # align body
+  align(align = "center", part = "body") %>% # align to center by default
+  align(align = "left", j = c(1,2)) %>% # align chemical names and method to the left
+  
+  # Add horizontal lines throughout
+  hline(part = "body") %>% 
+  
+  # Merge rows describing the transformation
+  merge_at(i = 1, j = 1:5) %>% 
+  merge_at(i = 26, j = 1:5) %>% 
+  
+  merge_v(j = 1) %>% 
+  
+  
+  # Add bold lines separating the results for both transformations
+  hline(i = c(1, 25, 26), part = "body", 
+        border = fp_border(width = 2)) %>% 
+  
+  # Add bold lines in the header and footer
+  hline(part = "header", border = fp_border(width = 2)) %>% 
+  # hline(part = "footer", border = fp_border(width = 2)) %>%   
+  hline(i = c(50), part = "body", 
+        border = fp_border(width = 2)) %>% 
+
+  # Title and bottom caption
+  add_header_lines(title_supp, top = T) %>%
+  add_footer_lines(footer_supp) %>% 
+
+  # set_table_properties(layout = "autofit", width = 1)
+  width(j = c(1:5),
+        width = c(0.6, 1, 1.4, 1.4, 1.4),
+        unit = "in")
+
+flex_table
+```
+
+
+# save
+```{r}
+# short
+doc_short <- read_docx() %>% 
+  body_add_flextable(value = flex_short_table)
+
+base::print(doc_short, target = paste0("real data analysis/table_real data_short", "_",  
+                                 Sys.Date(), ".docx"))
+
+# full
+doc_full <- read_docx() %>% 
+  body_add_flextable(value = flex_table)
+
+base::print(doc_full, target = paste0("real data analysis/table_real data_full", "_",  
+                                 Sys.Date(), ".docx"))
+
+
+```
+
+```{r}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

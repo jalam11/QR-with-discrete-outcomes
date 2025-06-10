@@ -1,0 +1,329 @@
+---
+title: "Simulation study 2025"
+author: "Josh Alampi"
+date: "2025-01-18"
+output: html_document
+---
+
+
+
+```{r}
+#clear workspace
+rm(list=ls(all=TRUE))
+
+# load packages and functions
+source(here::here("libraries.R"))
+# source(here::here("functions/Bayesian QR_adjusted intervals.R"))
+
+summary_sw <- function(object, # the BayesQR object (made from running BayesQR(y ~ x1 + x2 + ...)). 
+                       ## The chemical/ exposure variable you are interested in must be listed as the **first** covariate in the BayesQR model
+                       n, # the sample size
+                       covariates= x, # A vector containing the covariate names, in the same order as the BayesQR() object
+                       burnin = 1,  # The initial number of iterations burned
+                       level = 0.95) { # The confidence interval level
+  
+  z <- qnorm( 1 - ((1-level) / 2) )
+  
+  tau <- object[[1]]$quantile
+  
+  D1.m1 <- sqrt(n)*var(object[[1]]$beta[-(1:burnin),])/1  # from page 331 of Yang. "D1.m1" means "D1 to the minus 1; which is the inverse of D1"
+  X <- covariates ## build an object called "X", which is required
+  D0 <- (1/n)*(t(X) %*% X) # from page 331 of Yang
+  
+  tmp <- sqrt(diag( tau*(1-tau) * ((D1.m1 %*% D0) %*% D1.m1))) #rows of right matrix must = # of columns of left matrix
+  
+  mn <- mean(object[[1]]$beta[-(burnin),2])  # regression coefficient for chemical (posterior mean)
+  se.adj <- tmp[2]
+  lower_bound <- mn - se.adj*z
+  upper_bound <- mn + se.adj*z
+  
+  res <- c(mn, lower_bound, upper_bound)
+  return(res)
+}
+```
+
+# parameters
+
+Binary X, iid model errors
+Binary X, nid model errors
+Binary X, nid and heavy-tailed (t distribution with df=4) model errors
+Continuous X, nid model errors
+Continuous X, nid and heavy-tailed (t distribution with df=4) model errors
+
+```{r}
+# Simulation parameters
+
+nsims <- 1000 # number of simulations performed
+m <- 7 # number of methods used
+
+z <- qnorm(0.95); z_lower <- 0.05; z_upper <- 0.95; level = 0.9 # For creating 90% Confidence intervals. 
+
+# model parameters: a vector for each model # x sample size (n) combination
+paras <- list( c(1, 100), c(1, 250), c(1, 500), # Model 1: Binary X, iid model errors
+               c(2, 100), c(2, 250), c(2, 500), # Model 2: Binary X, nid model errors
+               c(3, 100), c(3, 250), c(3, 500), # Model 3: Binary X, nid and heavy-tailed model errors
+               c(4, 100), c(4, 250), c(4, 500), # Model 4: Continuous X, nid model errors
+               c(5, 100), c(5, 250), c(5, 500)) # Model 5: Continuous X, nid and heavy-tailed model errors
+
+taus <- c(0.1, 0.5, 0.9)
+
+## x2
+prob_x2 <- 0.2 # probability that the confounder x2 equals 1
+
+## x1
+gamma <- 0.1 # effect of x2 on x1
+prob_x1 <- 0.5 - (gamma * prob_x2) # probability that binary x1=1 should be 50% after accounting for confounders
+mu_x1 <- 0 # mean of continuous x1
+sigma_x1 <- 1 # variance of continuous x1
+
+
+## y parameters
+beta0 <- 44 # true y value when x1 and x2 equall 0
+beta1 <- 0.5 # true effect of x1 on y
+beta2 <- 2.5 # true effect of x2 on y
+
+mu_u <- 0 # mean model error value
+sigma_u <- 1 # variance of model errors
+tdist_df <- 4 # Degrees of freedom for the t distribution
+alpha_y <- 5 # model error value is multiplied by this
+
+## misc parameters
+boot <- 1000 # Number of xy bootstraps selected
+ndraw <- 10000 # Number of MCMC draws for Bayesian QR
+burnin <- 2000 # Initial number of MCMC draw that are 'burned' or discarded
+```
+
+# make table
+```{r}
+table <- setNames(data.frame(matrix(data = NA, nrow = m*length(taus)*length(paras)*nsims, 
+                                    ncol = 8)), 
+                  c("method", "beta", "lb", "ub", "true_beta", "tau", "model", "n")) #set column names
+```
+
+# Simulation study
+NOTE: using suppressWarnings() to stop the "solutions may be nonunique" from spamming the console and causing lag
+```{r}
+set.seed(123)
+
+for(i in 1:nsims){
+  print(paste0(i, " simulations out of ", nsims))
+  
+  for(j in 1:length(paras)){
+    this_para <- paras[[j]]
+
+    model <- this_para[1]
+    n <- this_para[2]
+    
+
+    # Step 1: Create data ----
+    
+    ## Make x2
+    x2 <- rbinom(n, 1, prob_x2) # create a confounding variable that is associated with x and y
+    
+    ## Make x1
+    if(model %in% c(1:3)){
+      x1 <- rbinom(n, 1, prob_x1 + gamma*x2) # binary x1 for models 1, 2, 3
+    } else {
+      x1 <- rnorm(n, mu_x1 + gamma*x2, sigma_x1) # Continuous x1 for models 4 and 5
+    }
+    
+    ## Specify model errors
+    if(model %in% c(1, 2, 4)){
+      e <- rnorm(n, mu_u, sigma_u) # Normally distributed errors for models 1, 2, 4
+    } else {
+      e <- rt(n, df = tdist_df, mu_u) # heavy-tailed (t distribution with df=4) model errors for models 3 and 5
+    }
+    
+    # Choose alpha_x1 value (controls whether variance in y depends on x1)
+    if(model == 1){
+      alpha_x1 <- 0 # Homoscedastic errors for model 1
+    } else {
+      alpha_x1 <- 0.5 # Heteroscedastic errors for models 2, 3, 4, 5
+    }
+    
+    # Make y, which is rounded to a whole number
+    y <- round(beta0 + beta1*x1 + beta2*x2 + e*(alpha_y + alpha_x1*x1), digits=0)
+    
+    for(k in 1:length(taus)){
+      tau <- taus[k]
+      
+      print(paste0("Model", model, ", n=", n, ", tau=", tau, ", iteration #", i))
+      
+      # Calcualate true effect of x1 for a given tau
+      
+      if (model %in% c(1, 2, 4)){
+        true_beta <- beta1 + qnorm(tau, mu_u, sigma_u)*(alpha_x1) # errors are normally distributed in models 1, 2, 4 
+      } else {
+        true_beta <- beta1 + qt(tau, df = tdist_df, mu_u)*(alpha_x1) # Errors have t-dist in models 3, 5
+      } 
+      
+      # Step 2: Make models and store parameters ----
+      
+      ## Frequentist models without dithering
+      rq_model_nodith <- (rq(y ~ x1 + x2, tau = tau)) # make model
+
+      ### rank with iid error intervals
+      riid_nodith_coef <- (summary(rq_model_nodith, se = "rank", iid = T, alpha = z_lower * 2)$coefficients)
+
+      ### xy bootstrap intervals
+      
+      if(model %in% c(4, 5)){ # Undithered xy method crashes R when x1 is continuous. So I will save a matrix of NAs instead of running crash-prone code
+        xy_nodith_coef <- matrix(data = NA, nrow = 2, ncol = 2)
+      } else { # otherwise, we can run the code as usual
+        xy_nodith_coef <- (summary(rq_model_nodith, se = "boot", bsmethod ="xy", R = boot)$coefficients)
+      }
+      
+
+
+      ## Frequentist models WITH dithering
+      y_dith <- dither(y)
+      rq_model_dith <- (rq(y_dith ~ x1 + x2, tau = tau)) # make model
+
+      ### rank with iid error intervals
+      riid_dith_coef <- (summary(rq_model_dith, se = "rank", iid = T, alpha = z_lower * 2)$coefficients)
+
+      ### xy bootstrap intervals
+      xy_dith_coef <- (summary(rq_model_dith, se = "boot", bsmethod ="xy", R = boot)$coefficients)
+      
+      ## Bayesian model
+
+      repeats_bqr <- 0
+      repeat{ # Remake model again if model fails to converge
+
+        # Make model
+        sink(file="bayesQR.txt") # save lengthy output to a text file so it does not display in console
+        bqr_model <- bayesQR(y ~ x1 + x2, quantile = tau, ndraw = ndraw)
+        sink()
+
+        # Check if it converged
+        model_converged <- ifelse(mean(bqr_model[[1]]$beta[,2]) == "NaN",
+                                  F, T)
+
+        if(model_converged == T){ # if the model converged
+          # Store the models parameters
+
+          ## Bayesian, unadjusted
+          bayesQR_coef <- summary(bqr_model,
+                                  burnin = burnin, credint = c(z_lower, z_upper))[[1]]$betadraw[2,]
+          bayes_unadj <- c(bayesQR_coef[1], # beta
+                           bayesQR_coef[2], # lb
+                           bayesQR_coef[3]) # ub
+
+          ## Bayesian, adjusted (v1)
+          bayes_adjv1 <- c(bayesQR_coef[1], # beta
+                           bayesQR_coef[4], # adjusted lb
+                           bayesQR_coef[5]) # unadjusted ub
+
+          ## Bayesian, adjusted (v2)
+          bayes_adj_sw <- summary_sw(bqr_model, n = n, burnin = burnin,
+                                     covariates= as.matrix(cbind(1, x1, x2)), level =level)
+          bayes_adjv2 <- c(bayes_adj_sw[1], # beta
+                           bayes_adj_sw[2], # lb
+                           bayes_adj_sw[3]) # ub
+
+
+
+          break # end the repeat statement
+        }
+
+
+        if(model_converged == F){ # if the model fails to converge
+          repeats_bqr <- repeats_bqr + 1
+          print(paste0("bqr Repeat # ", repeats_bqr))
+        }
+
+        if(repeats_bqr == 20){ # if model fails to converge too many times
+          print(paste0("Model failed to converge too many times, will assign NA to BayesQR models for model#", model,
+                       ", n=", n, ", tau=", tau, ", iteration #", i))
+
+          ## Bayesian, unadjusted
+          bayes_unadj <- c(NA, NA, NA) # assign NA
+
+          ## Bayesian, adjusted (v1)
+          bayes_adjv1 <- c(NA, NA, NA) # assign NA
+
+          ## Bayesian, adjusted (v2)
+          bayes_adjv2 <- c(NA, NA, NA) # assign NA
+
+          break # end the repeat statement
+        }
+      }
+      
+      
+      # Step 3: Store values ----
+      ## Stores the method name, beta, lb, ub
+      
+      skip <- (k-1)*m + (j-1)*m*length(taus) + (i-1)*m*length(taus)*length(paras)
+      lower_range <- skip + 1
+      upper_range <- skip + m
+      
+      # # ## riid no dith
+      table[skip +1, 1] <- "riid_nodith"
+      table[skip +1, 2] <- riid_nodith_coef[2, 1] # beta
+      table[skip +1, 3] <- riid_nodith_coef[2, 2] # lb
+      table[skip +1, 4] <- riid_nodith_coef[2, 3] # ub
+
+      # ## xy no dith
+      table[skip +2, 1] <- "xy_nodith"
+      table[skip +2, 2] <- xy_nodith_coef[2, 1]
+      table[skip +2, 3] <- xy_nodith_coef[2, 1] - z * xy_nodith_coef[2, 2]
+      table[skip +2, 4] <- xy_nodith_coef[2, 1] + z * xy_nodith_coef[2, 2]
+
+      # ## riid with dith
+      table[skip +3, 1] <- "riid_dith"
+      table[skip +3, 2] <- riid_dith_coef[2, 1] # beta
+      table[skip +3, 3] <- riid_dith_coef[2, 2] # lb
+      table[skip +3, 4] <- riid_dith_coef[2, 3] # ub
+
+      ## xy with dith
+      table[skip +4, 1] <- "xy_dith"
+      table[skip +4, 2] <- xy_dith_coef[2, 1]
+      table[skip +4, 3] <- xy_dith_coef[2, 1] - z * xy_dith_coef[2, 2]
+      table[skip +4, 4] <- xy_dith_coef[2, 1] + z * xy_dith_coef[2, 2]
+
+      # ## Unadjusted Bayes
+      table[skip +5, 1] <- "bayes_unadj"
+      table[skip +5, 2] <- bayes_unadj[1]
+      table[skip +5, 3] <- bayes_unadj[2]
+      table[skip +5, 4] <- bayes_unadj[3]
+
+      # ## Adjusted Bayes v1 (from BayesQR package)
+      table[skip +6, 1] <- "bayes_adjv1"
+      table[skip +6, 2] <- bayes_adjv1[1]
+      table[skip +6, 3] <- bayes_adjv1[2]
+      table[skip +6, 4] <- bayes_adjv1[3]
+
+      # ## Adjusted Bayes v2 (my sandwich function)
+      table[skip +7, 1] <- "bayes_adjv2"
+      table[skip +7, 2] <- bayes_adjv2[1]
+      table[skip +7, 3] <- bayes_adjv2[2]
+      table[skip +7, 4] <- bayes_adjv2[3]
+      
+      ## Fill in the rest
+      table[lower_range:upper_range, 5] <- true_beta
+      table[lower_range:upper_range, 6] <- tau
+      table[lower_range:upper_range, 7] <- model
+      table[lower_range:upper_range, 8] <- n
+      
+    }
+  }
+  
+  if(i %%100 == 0){ # Save every 100 iterations so in case it crashes I can look at what was generated so far
+    write.csv(table, row.names = F,
+              file = paste0("data/raw/QR sim study_all models", "_",  Sys.Date(), "_", i, "_runs_",  nsims, "_sims.csv", sep = ""))
+  }
+}
+```
+
+
+# save
+```{r}
+#save as a csv file
+write.csv(table, row.names = F, file = paste0("data/raw/QR sim study_all models", "_",  Sys.Date(), "_", nsims, "_sims.csv", sep = ""))
+```
+
+```{r}
+
+```
+
+
