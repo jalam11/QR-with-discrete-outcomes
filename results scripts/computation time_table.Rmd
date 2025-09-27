@@ -1,0 +1,257 @@
+---
+title: "computation time_table"
+author: "Josh Alampi"
+date: "2025-08-27"
+output: html_document
+---
+
+
+
+# load
+```{r}
+#clear workspace
+rm(list=ls(all=TRUE))
+
+# load packages and functions
+source(here::here("libraries.R"))
+source(here::here("functions/ggplot functions.R"))
+
+data <- read.csv(here::here("data", "raw", "QR sim study_all models_2025-09-08_1000_sims.csv")) %>% 
+  select(-c(beta:true_beta)) %>%  # get rid of column we don't need
+  filter(method != "bayes_adjv1") %>%  # this method does not work, do not include
+  filter(model == 1) # Computation time does not differ by model. Will just use model 1 for simplicity
+
+```
+
+
+# clean
+## Fix labels
+```{r}
+# Edit method labels
+int_method_labels_cov <- c("Rank (not\ndithered)", "xy-bootstrapᵇ\n(not dithered)",
+                           "Rank\n(dithered)", "xy-bootstrapᵇ\n(dithered)",
+                           "Bayesianᶜ\n(unadjusted)", "Bayesianᶜ\n(adjusted)")
+
+data <- data %>% 
+  # Fix method labels
+  mutate(int_method_cov = case_when(method == "riid_nodith" ~ int_method_labels_cov[1],
+                                    method == "xy_nodith" ~ int_method_labels_cov[2],
+                                    method == "riid_dith" ~ int_method_labels_cov[3],
+                                    method == "xy_dith" ~ int_method_labels_cov[4],
+                                    method == "bayes_unadj" ~ int_method_labels_cov[5],
+                                    method == "bayes_adjv2" ~ int_method_labels_cov[6]
+                                    )) %>% 
+
+  ## Set the order
+  mutate(int_method_cov = factor(int_method_cov, int_method_labels_cov)) %>% 
+  
+  # Clean up the sample size 'n' labels
+  mutate(n = paste0("n = ", n)) %>% 
+  
+  # Clean up the tau labels
+  mutate(tau = as.factor(tau))%>%
+  mutate(tau = paste0("τ = ", tau))
+
+```
+
+
+
+# Get results, clean
+For simplicity, I will only report tau = 0.5 The xy method differed slightly depending on tau, but either way it was clearly much faster than Bayesian QR, and a bit slower than rank-based QR. Better to simplify the table if the message is identical. 
+```{r}
+results_round <- 2
+
+clean_data <- data %>% 
+  filter(tau == "τ = 0.5") %>% 
+  select(-c(tau)) %>% 
+  
+  # Calculation
+  group_by(int_method_cov, n) %>% 
+  summarise(mean_time = format(round(mean(time, na.rm = T), results_round), 
+                               nsmall = results_round, trim =T),
+            sd_time = format(round(sd(time, na.rm = T), results_round), 
+                               nsmall = results_round, trim =T)
+            ) %>% 
+  
+  # Clean up
+  mutate(time = paste0(mean_time, " (", sd_time, ")")) %>% 
+  select(-c(mean_time, sd_time)) %>% 
+  
+  # Make wide
+  pivot_wider(names_from = c(n), 
+              values_from = c(time), names_vary = "slowest") 
+
+# Fix column names
+column_names <- c("Method", 
+                  "Mean (SD) computation time, seconds_n = 100",
+                  "Mean (SD) computation time, seconds_n = 250",
+                  "Mean (SD) computation time, seconds_n = 500",
+                  "Mean (SD) computation time, seconds_n = 750"
+                  )
+colnames(clean_data) <- column_names # set names
+
+```
+
+# make flextable
+
+## Set table labels
+```{r}
+title <- "Table S3. Computation timeᵃ for quantile regression methods. Model 1 and τ = 0.5 used throughout."
+
+footer <- "a: With a Windows 10 computer, i7-7700 processor, R version 4.5.1.\nb: 1000 bootstraps used. Computation time depends on the number of bootstraps used. \nc: 10,000 Markov Chain Monte Carlo iterations used. Computation time depends on the number of iterations used."
+```
+
+## set flextable defaults
+```{r}
+init_flextable_defaults()
+
+set_flextable_defaults(
+  font.size = 9.5, font.family = "Calibri",
+  font.color = "black",
+  table.layout = "fixed",
+  border.color = "black",
+  line_spacing = 1,
+  padding.top = 0, padding.bottom = 0,
+  padding.left = 0, padding.right = 0)
+
+```
+
+## make flextable
+```{r}
+time_table <- clean_data %>%
+  flextable() %>%
+  separate_header(split = "_") %>% 
+
+  # align header
+  align(align = "center", part = "header") %>% # align to center by default
+  align(align = "left", part = "header", j = 1) %>% 
+
+  # align body
+  align(align = "center", part = "body") %>% # align to center by default
+  align(align = "left", j = c(1)) %>% # first row to the left
+
+  # Add horizontal lines throughout
+  hline(part = "body") %>%
+
+  # Add bold lines in the header
+  hline(part = "header", border = fp_border(width = 2)) %>%
+
+  # Title and bottom caption
+  add_header_lines(title, top = T) %>%
+  add_footer_lines(footer) %>% 
+
+  # set_table_properties(layout = "autofit", width = 1)
+  width(j = c(1:5),
+        width = c(1, rep(0.8, 4)),
+        unit = "in")
+
+time_table
+```
+# save
+```{r}
+doc <- read_docx() %>% 
+  body_add_flextable(value = time_table)
+
+base::print(doc, target = paste0("results/table_computation time", "_",  
+                                 Sys.Date(), ".docx"))
+```
+
+
+```{r}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+# CUT
+
+# Time by tau
+Will not use.
+
+# Get results, clean
+```{r}
+results_round <- 2
+
+clean_data_with_tau <- data %>%
+  # Calculation
+  group_by(int_method_cov, n, tau) %>%
+  summarise(mean_time = format(round(mean(time, na.rm = T), results_round),
+                               nsmall = results_round, trim =T),
+            sd_time = format(round(sd(time, na.rm = T), results_round),
+                               nsmall = results_round, trim =T)
+            ) %>%
+
+  # Clean up
+  mutate(time = paste0(mean_time, ", (", sd_time, ")")) %>%
+  select(-c(mean_time, sd_time)) %>%
+
+  # Make wide
+  pivot_wider(names_from = c(tau),
+              values_from = c(time), names_vary = "slowest") %>%
+
+  # set order
+  arrange(n, int_method_cov)
+
+# Fix column names
+column_names <- c("Method", "n",
+                  "Mean (SD) computation time, seconds_τ = 0.1",
+                  "Mean (SD) computation time, seconds_τ = 0.5",
+                  "Mean (SD) computation time, seconds_τ = 0.9"
+                  )
+colnames(clean_data_with_tau) <- column_names # set names
+
+```
+
+```{r}
+time_table_with_tau <- clean_data_with_tau %>%
+  flextable() %>%
+  separate_header(split = "_") %>% 
+
+  # align header
+  align(align = "center", part = "header") %>% # align to center by default
+  align(align = "left", part = "header", j = 1) %>% 
+
+  # align body
+  align(align = "center", part = "body") %>% # align to center by default
+  align(align = "left", j = c(1)) %>% # first row to the left
+
+  # Add horizontal lines throughout
+  hline(part = "body") %>%
+  
+  # Add bold lines separating the different n values
+  hline(i = c(6, 12, 18, 24), part = "body",
+        border = fp_border(width = 2)) %>% 
+
+  # Add bold lines in the header
+  hline(part = "header", border = fp_border(width = 2)) %>%
+
+  # Title and bottom caption
+  add_header_lines(title, top = T) %>%
+  add_footer_lines(footer) 
+
+  # # set_table_properties(layout = "autofit", width = 1)
+  # width(j = c(1:5),
+  #       width = c(0.6, 1, 1.4, 1.4, 1.4),
+  #       unit = "in")
+
+time_table
+```
+
+
+
+
+
+
+
+
+
+
+
