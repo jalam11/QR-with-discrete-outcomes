@@ -16,6 +16,7 @@ select <- dplyr::select
 library(quantreg)
 library(bayesQR)
 library(Brq)
+library(tictoc)
 
 library(emg) # For building exponenetially modified distribution (for testing)
 
