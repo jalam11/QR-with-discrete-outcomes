@@ -13,16 +13,17 @@ rm(list=ls(all=TRUE))
 # load packages and functions
 source(here::here("libraries.R"))
 
-data <- read.csv(here::here("data", "raw", "QR sim study_all models_2025-01-18_1000_sims.csv"))
+data <- read.csv(here::here("data", "raw", "QR sim study_all models_2025-09-08_1000_sims.csv"))
 
 sims <- 1000 # the number of simulations that were run. Will calculate nsims_beta, nsims_beta for method that did not generate valid beta coefficients or confidence intervals 
 ```
 
 # clean
-
 ```{r}
-data <- data %>% 
-  filter(method != "bayes_adjv1") # do not need adj_v1 (the default SW adjustment), as I have demonstrated earlier that it is defective. 
+# data <- data %>% 
+#   filter(method != "bayes_adjv1") # do not need adj_v1 (the default SW adjustment), as I have demonstrated earlier that it is defective. 
+
+# EDIT: will remove this method in the next stage (making tables and figures with results) so that when readers review the "res2" file on github (which contains the "cleaned" simulation results), they can see for themselves that this method gives extremely high coverage rates, which is clearly inconsistent with Yang et al. 2016
 ```
 
 ```{r}
@@ -74,7 +75,7 @@ data_summarised_2 <- data %>%
 # Add this value to the dataframe
 data <- merge(data, data_summarised_1, by=c("method", "tau", "model", "n"))
 data <- merge(data, data_summarised_2, by=c("method", "tau", "model", "n"))
-rm(data_summarised_1, data_summarised_2)
+# rm(data_summarised_1, data_summarised_2)
 ```
 
 ## Calculate performance measures 
@@ -204,6 +205,7 @@ rel_empSE_beta <- empSE_beta %>%
          bayes_unadj = 100*(((empSE_bayes_unadj/empSE_riid_nodith)^2 ) - 1),
          riid_nodith = 0,
          xy_dith = NA,
+         bayes_adjv1 = NA,
          bayes_adjv2 = NA,
          xy_nodith = NA
          ) %>% 
@@ -218,6 +220,7 @@ rel_empSE_se_beta <- empSE_beta %>%
          bayes_unadj = 200*((empSE_bayes_unadj/empSE_riid_nodith)^2) * sqrt((1-(cor_nodith_vs_bayes)^2)/ (sims -1)),
          riid_nodith = 0,
          xy_dith = NA,
+         bayes_adjv1 = NA,
          bayes_adjv2 = NA,
          xy_nodith = NA
          ) %>% 
@@ -234,22 +237,11 @@ res2 <- merge(res2, rel_empSE_se_beta, by=c("method", "tau", "n", "model"))
 ```
 
 
-
-
-
-
-
 ```{r}
 #save as a csv file
-write.csv(res2, row.names = F, file = paste0("data/cleaned/cleaned SS_all models_2025-01-18_1000_sims.csv", sep = ""))
+write.csv(res2, row.names = F, file = paste0("data/cleaned/cleaned SS_all models_2025-09-08_1000_sims.csv", sep = ""))
 ```
 
 ```{r}
 
 ```
-
-
-
-
-
-
