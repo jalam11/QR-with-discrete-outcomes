@@ -1,0 +1,293 @@
+---
+title: "investigating unusual results"
+author: "Josh Alampi"
+date: "2025-09-20"
+output: html_document
+---
+
+
+# load
+```{r}
+#clear workspace
+rm(list=ls(all=TRUE))
+
+# load packages and functions
+source(here::here("libraries.R"))
+
+data <- read.csv(here::here("data", "raw", "QR sim study_all models_2025-09-08_1000_sims.csv"))
+
+sims <- 1000 # the number of simulations that were run. Will calculate nsims_beta, nsims_beta for method that did not generate valid beta coefficients or confidence intervals 
+```
+
+# clean
+```{r}
+# data <- data %>% 
+#   filter(method != "bayes_adjv1") # do not need adj_v1 (the default SW adjustment), as I have demonstrated earlier that it is defective. 
+
+# EDIT: will remove this method in the next stage (making tables and figures with results) so that the "res2" file (with cleaned results) can demonstrate how this method gives results that clearly diverge from Yang et al. 2016
+```
+
+```{r}
+data$beta <- as.numeric(data$beta)
+data$lb <- as.numeric(data$lb)
+data$ub <- as.numeric(data$ub)
+data$tau <- as.factor(data$tau)
+```
+
+
+# Make dataset with results
+
+## find interval width, remove infinite intervals
+```{r}
+# find interval width, with infinite intervals set to NA
+data <- data %>% 
+  mutate(int_width = ub - lb)
+
+# Flag and delete infinite intervals
+# Flag and delete simulations with no effect estimate
+data <- data %>% 
+  mutate(infin_flag = ifelse(is.infinite(lb) == T | is.infinite(ub) == T,
+                             T, # interval is infinite it should be removed
+                             F) ) %>%
+  mutate(na_flag = ifelse(is.na(beta) == T,
+                          T, # no effect estimate is given due to failure to converge
+                          F)) %>% 
+  # Make intervals and int_width NA when infinite intervals or failure to converge occured
+  mutate(lb = ifelse(infin_flag == T | na_flag == T, NA, lb)) %>%
+  mutate(ub = ifelse(infin_flag == T | na_flag == T, NA, ub)) %>%
+  mutate(int_width = ifelse(infin_flag == T | na_flag == T, NA, int_width))
+
+```
+
+## find average beta and average CI width across each group of variable
+Find the mean \hat(beta_i) across repetitions (Morris et al 2017 calls this value "beta-vinculum", the beta symboll with a flat line on top)
+
+```{r}
+data_summarised_1 <- data %>% 
+  group_by(method, tau, n, model) %>% 
+  summarise(mean_beta = mean(beta, na.rm = T)) 
+
+# Repeat this process with mean(\hat(interval width))
+data_summarised_2 <- data %>% 
+  group_by(method, tau, n, model) %>% 
+  summarise(mean_intwidth = mean(int_width, na.rm = T))
+
+
+# Add this value to the dataframe
+data <- merge(data, data_summarised_1, by=c("method", "tau", "model", "n"))
+data <- merge(data, data_summarised_2, by=c("method", "tau", "model", "n"))
+# rm(data_summarised_1, data_summarised_2)
+```
+
+## Calculate performance measures 
+```{r}
+data1 <- data %>%
+  mutate(n = paste0(("n = "), n)) %>% 
+  
+  # Performance measures
+  mutate(hit_flag = ifelse(lb <= true_beta & ub >= true_beta,
+                           T, #90% interval contains true_beta
+                           F)) %>%
+  
+  mutate(hit_flag_be = ifelse(lb <= mean_beta & ub >= mean_beta,
+                              T, #90% interval contains mean_beta
+                              F)) %>%
+  
+  mutate(bias = beta - true_beta) %>% 
+  mutate(bias_rel = beta - mean_beta) %>%
+  mutate(intwidth_rel = int_width - mean_intwidth) %>% 
+  
+  # Cleaning
+  mutate(beta_ci_same_flag = ifelse(beta == lb | beta == ub, # flag rows where beta = lb or ub
+                             T, # interval is degenerate
+                             F) )
+
+```
+
+## make "res" (shortens "data" into something which can actually be interpretted)
+Calculations for these performance measures came from Morris et al. 2017
+```{r}
+
+
+res <- data1 %>% 
+  group_by(method, tau, n, model) %>% 
+  summarise(
+            # Find the proportion of flagged results (cannot use these in certain calculations)
+            beta_ci_same = sum(beta_ci_same_flag) / sims, # proportion of degenerate intervals
+            infin = sum(infin_flag == T) / sims, # proportion of infinite intervals
+            na = sum(na_flag == T) / sims, # proportion of effect estimates failing to converge
+            
+            # Calculate the number of simulations with enough info to performance
+            ## This information is needed to calculate all the performance measures!
+            skip_beta = (sum(na_flag == T) / sims), # proportion of skips needed for estimating the beta coefficients
+            skip_int = (sum(infin_flag == T | na_flag == T) / sims), # proportion of skips needed for estimate the intervals
+            
+            nsims_beta = sims - (sims*skip_beta), # the number of simulations where a beta coefficient was estimated
+            nsims_int = sims - (sims*skip_int), # the number of simulations where intervals were estimated
+            
+            
+            # effect estimate-based performance measures
+            ## I  need to take the beta estimates that failed to converge into account. Thus I use "nsims_beta". 
+            bias = sum(bias, na.rm = T) / nsims_beta,
+            bias_se = sqrt( sum((bias_rel)^2, na.rm = T) / (nsims_beta * (nsims_beta -1)) ),
+            
+            empSE = sqrt( sum((bias_rel)^2, na.rm = T) / (nsims_beta - 1) ),
+            empSE_se = empSE / sqrt( 2  * (nsims_beta - 1) ), # empSE_se depends on empSE value
+            
+            
+            # interval-based performance measures
+            ## I  need to take the beta estimates that failed to converge AND the infinite intervals into account. Thus I use "nsims_int". 
+            cov = sum(hit_flag == T, na.rm = T) / nsims_int, #### Emperical coverage probability
+            cov_se = sqrt( cov * (1-cov) / nsims_int ), # cov_se depends on cov value
+            
+            cov_be = sum(hit_flag_be == T, na.rm = T) / nsims_int, #### Bias-adjusted Emperical Coverage Prob.
+            cov_be_se = sqrt( cov_be * (1-cov_be) / nsims_int ), # cov_be_se depends on cov_be value
+            
+            intwidth_empSE = sqrt( sum((intwidth_rel)^2, na.rm = T) / (nsims_int - 1) ),
+            intwidth_empSE_se = intwidth_empSE / sqrt( 2  * (nsims_int - 1) )
+
+            ) 
+
+
+# Note: cov_be, cov_be_se are no longer used in the analysis. Left them in anyways in case I end up needing them at some point. 
+
+```
+
+
+
+# investigate Bayesian intervals
+Show that bayes_adjv1 (BayesQR's version) produces confidence intervals that are clearly too wide. On average they are 4.4 times wider! 
+```{r}
+check_bayesadj_intwidth <- data_summarised_2 %>% 
+  filter(method %in% c("bayes_adjv1", "bayes_adjv2", "bayes_unadj")) %>% # just look at Bayesian methods
+  pivot_wider(names_from = method, values_from = mean_intwidth) %>% 
+  mutate(default_vs_our_adj = bayes_adjv1/bayes_adjv2) %>% 
+  mutate(default_vs_no_adj = bayes_adjv1/bayes_unadj) %>% 
+  mutate(our_adj_vs_no_adj = bayes_adjv2/bayes_unadj) 
+
+summary(check_bayesadj_intwidth$default_vs_our_adj) # BayesQR's adjustment versus our adjustment. Very dramatic difference in widths!
+summary(check_bayesadj_intwidth$our_adj_vs_no_adj) # Our adjustment versus no adjustment applied. Difference in widths less dramatic
+
+summary(check_bayesadj_intwidth$default_vs_no_adj) # BayesQR's adjustment versus no adjustment applied
+```
+
+Show that bayes_adjv1 (BayesQR's version) produces confidence intervals that are clearly too wide. They cover the true value 100% of the time (or as low as 99.7%, depending on how many digits you round too). 
+```{r}
+check_bayesadj_intwidth <- res %>% 
+  filter(method %in% c("bayes_adjv1", "bayes_adjv2", "bayes_unadj")) %>% # just look at Bayesian methods
+  select(c("method", "tau", "n", "model", "cov", "cov_se")) # get rid of unncessary columns
+check_bayesadj_intwidth
+
+table(check_bayesadj_intwidth$cov[check_bayesadj_intwidth$method == "bayes_adjv1"])
+# in 77 out of 84 possible sample size x tau x model combinations, BayesQR had a coverage rate of 100%. A coverage rate this high is extremely unusual, so the fact that it happened in so many scenarios is clearly an issue. 
+```
+
+# investigating infinite intervals
+```{r}
+check_infinite_intervals <- res %>% 
+  select(c("method", "tau", "n", "model", "infin")) %>% # get rid of unncessary columns
+  filter(infin > 0) %>%  # only retain situations where infinite results were observed
+  mutate(num_infin = infin * sims)
+
+check_infinite_intervals
+
+sum(check_infinite_intervals$num_infin)
+```
+
+```{r}
+number_infinite <- res %>% 
+  filter(method == "riid_nodith") %>% # infinite intervals only observed with undithered rank method
+  select(c(tau, n, model, infin)) %>% # get rid of unncessary columns
+  mutate(num_infin = infin * sims) %>%# convert fraction to observed number
+  mutate(clean_value = paste0(num_infin, " (",round(infin*100,2) , "%)")) %>% 
+  select(-c(infin, num_infin)) %>% # don't need this column any more
+  pivot_wider(names_from = model, names_prefix = "model_",
+              values_from = clean_value) %>% 
+  arrange(n) 
+
+# model_labels <- c("M1: Binary X1,\niid model\nerrors", 
+#                   "M2: Binary X1,\nnid model\nerrors",
+#                   "M3: Binary X1,\nnid & heavy-\ntailed model \nerrors", 
+#                   "M4: Cnts X1,\nnid model\nerrors",
+#                   "M5: Cnts X1,\nnid & heavy-\ntailed model\nerrors", 
+#                   "M6: Discrete\nX1, nid model\nerrors",
+#                   "M7: Discrete\nX1, nid &\nheavy-tailed \nmodel errors"
+#                   )
+model_labels <- c("Model 1: Binary X1, iid model errors", 
+                  "Model 2: Binary X1, nid model errors",
+                  "Model 3: Binary X1, nid & heavy- tailed model errors", 
+                  "Model 4: Cnts X1, nid model errors",
+                  "Model 5: Cnts X1, nid & heavy- tailed model errors", 
+                  "Model 6: Discrete X1, nid model errors",
+                  "Model 7: Discrete X1, nid & heavy-tailed model errors"
+)
+
+
+colnames(number_infinite) <- c("method", "n", "tau", model_labels)
+
+
+#save as a csv file to the 'testing' folder
+write.csv(number_infinite, row.names = F, 
+          file = paste0("testing/number_infinite_2025-09-08_1000_sims.csv", sep = ""))
+
+```
+
+
+
+
+
+
+
+# investigating bayesQR failure to converge
+```{r}
+table(data$converge_attempts[data$method == "bayes_adjv1"])
+82989/84000
+(324)/84000
+(6)/84000
+(324+6)/84000
+(82989+324+6)/84000 # Got valid results 99.19% of the time
+681/84000 # failed to converge 
+```
+
+
+```{r}
+check_fail_to_converge <- data %>% 
+  filter(method == "bayes_adjv1") %>%  # Just need to look at one version of the bayesian method
+  select(c(method, tau, model, n, converge_attempts)) %>% 
+  group_by(tau, n, model) %>% 
+  summarize(attempts_0 = sum(converge_attempts == 0),
+            attempts_1 = sum(converge_attempts == 1),
+            attempts_2 = sum(converge_attempts == 2),
+            attempts_3_19 = sum(converge_attempts >=3 & converge_attempts <=19),
+            attempts_20 = sum(converge_attempts == 20))
+
+check_fail_to_converge
+```
+
+```{r}
+number_failure_converge <- check_fail_to_converge %>% 
+  select(-c(attempts_0:attempts_3_19)) %>% # for this table we are only looking at instances where no results were generated after 20 repeats
+  mutate(clean_value = paste0(attempts_20, " (",round((attempts_20/1000)*100,2) , "%)")) %>% 
+  select(-c(attempts_20)) %>% 
+  pivot_wider(names_from = model, names_prefix = "Model_",
+              values_from = clean_value) %>%
+  arrange(n) 
+
+
+colnames(number_failure_converge) <- c("n", "tau", model_labels)
+
+  
+  # select(c(n, tau, Model_3, Model_5, Model_7, everything())) # list models 3, 5, 7 first
+  
+# mutate(models_1_2_4_6 = sum(model_1 + model_2 + model_4 + model_6)) %>% # New column: sum of the remaining models
+#   select(-c(model_1, model_2, model_4, model_6)) # don't need these columns anymore
+
+#save as a csv file to the 'testing' folder
+write.csv(number_failure_converge, row.names = F, 
+          file = paste0("testing/number_failure_converge_2025-09-08_1000_sims.csv", sep = ""))
+
+```
+
+
+
+
